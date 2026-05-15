@@ -1,0 +1,21 @@
+{
+  "name": "moonwalk-electron",
+  "private": true,
+  "version": "0.1.0",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "cross-env MOONWALK_DEFAULT_ROUTE=/main electron .",
+    "start:main": "cross-env MOONWALK_DEFAULT_ROUTE=/main electron .",
+    "start:station": "cross-env MOONWALK_DEFAULT_ROUTE=/station electron .",
+    "start:admin": "cross-env MOONWALK_DEFAULT_ROUTE=/admin electron .",
+    "dev": "wait-on tcp:5173 && cross-env MOONWALK_RENDERER_URL=http://127.0.0.1:5173 MOONWALK_DEFAULT_ROUTE=/main electron .",
+    "dev:main": "wait-on tcp:5173 && cross-env MOONWALK_RENDERER_URL=http://127.0.0.1:5173 MOONWALK_DEFAULT_ROUTE=/main electron .",
+    "dev:station": "wait-on tcp:5173 && cross-env MOONWALK_RENDERER_URL=http://127.0.0.1:5173 MOONWALK_DEFAULT_ROUTE=/station electron .",
+    "dev:admin": "wait-on tcp:5173 && cross-env MOONWALK_RENDERER_URL=http://127.0.0.1:5173 MOONWALK_DEFAULT_ROUTE=/admin electron ."
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "electron": "^39.0.0",
+    "wait-on": "^8.0.3"
+  }
+}

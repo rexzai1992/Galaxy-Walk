@@ -1,0 +1,23 @@
+{
+  "name": "moonwalk-selfie-parade",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "npm run dev:all",
+    "install:frontend": "npm --prefix apps/frontend install",
+    "install:server": "npm --prefix apps/server install",
+    "install:electron": "npm --prefix apps/electron install",
+    "install:all": "npm run install:frontend && npm run install:server && npm run install:electron",
+    "dev:server": "npm --prefix apps/server run dev",
+    "dev:frontend": "npm --prefix apps/frontend run dev",
+    "dev:all": "concurrently -k -n SERVER,FRONTEND -c yellow,cyan \"npm run dev:server\" \"npm run dev:frontend\"",
+    "open:routes": "sh -c 'sleep 2; open http://localhost:5173/main; open http://localhost:5173/station; open http://localhost:5173/admin'",
+    "dev:all:open": "sh -c 'npm run open:routes & npm run dev:all'",
+    "dev:electron:main": "npm --prefix apps/electron run dev:main",
+    "dev:electron:station": "npm --prefix apps/electron run dev:station",
+    "dev:electron:admin": "npm --prefix apps/electron run dev:admin"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

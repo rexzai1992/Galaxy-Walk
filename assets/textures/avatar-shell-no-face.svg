@@ -1,0 +1,61 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="helmetGrad" x1="256" y1="120" x2="768" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DDE6FF" />
+      <stop offset="1" stop-color="#A7B7DC" />
+    </linearGradient>
+    <linearGradient id="bodyGrad" x1="340" y1="420" x2="700" y2="980" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#516DAA" />
+      <stop offset="1" stop-color="#2E4169" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="280" y1="620" x2="740" y2="730" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#54E6FF" />
+      <stop offset="1" stop-color="#22B8DB" />
+    </linearGradient>
+
+    <!-- White keeps visible, black punches a transparent hole -->
+    <mask id="faceHoleMask">
+      <rect width="1024" height="1024" fill="white" />
+      <circle cx="512" cy="330" r="126" fill="black" />
+    </mask>
+  </defs>
+
+  <g mask="url(#faceHoleMask)">
+    <!-- Helmet outer shell -->
+    <circle cx="512" cy="330" r="220" fill="url(#helmetGrad)" />
+    <circle cx="512" cy="330" r="194" stroke="#EEF3FF" stroke-width="10" opacity="0.7" />
+
+    <!-- Neck ring -->
+    <ellipse cx="512" cy="486" rx="190" ry="58" fill="#334A7C" />
+    <ellipse cx="512" cy="486" rx="166" ry="42" fill="#92A6D5" />
+
+    <!-- Torso -->
+    <path
+      d="M364 548C364 518 389 494 420 494H604C635 494 660 518 660 548V786C660 829 625 864 582 864H442C399 864 364 829 364 786V548Z"
+      fill="url(#bodyGrad)"
+    />
+
+    <!-- Chest accent -->
+    <rect x="410" y="620" width="204" height="74" rx="22" fill="url(#accentGrad)" />
+    <rect x="442" y="646" width="140" height="22" rx="11" fill="#0A3552" opacity="0.65" />
+
+    <!-- Left arm -->
+    <rect x="266" y="550" width="92" height="240" rx="46" fill="#3E578B" />
+    <circle cx="312" cy="808" r="44" fill="#B4C4E8" />
+
+    <!-- Right arm -->
+    <rect x="666" y="550" width="92" height="240" rx="46" fill="#3E578B" />
+    <circle cx="712" cy="808" r="44" fill="#B4C4E8" />
+
+    <!-- Left leg -->
+    <rect x="426" y="820" width="72" height="150" rx="30" fill="#2C3D63" />
+    <ellipse cx="462" cy="964" rx="50" ry="24" fill="#192745" />
+
+    <!-- Right leg -->
+    <rect x="526" y="820" width="72" height="150" rx="30" fill="#2C3D63" />
+    <ellipse cx="562" cy="964" rx="50" ry="24" fill="#192745" />
+  </g>
+
+  <!-- Optional visible face ring guide (not filled) -->
+  <circle cx="512" cy="330" r="132" stroke="#EAF4FF" stroke-width="8" opacity="0.75" />
+</svg>
