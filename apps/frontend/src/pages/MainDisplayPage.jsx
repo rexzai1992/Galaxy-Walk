@@ -1,9 +1,10 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { MathUtils } from 'three'
+import { CanvasTexture, MathUtils, SRGBColorSpace } from 'three'
+import { TransformControls } from '@react-three/drei'
 import { io } from 'socket.io-client'
 import AlienGlbCharacter from '../components/main/AlienGlbCharacter.jsx'
-import { ALIEN_GLB_FILES } from '../components/main/alienGlbConfig'
+import { CHARACTER_GLB_URL } from '../components/main/alienGlbConfig'
 import ParadeCharacter from '../components/main/ParadeCharacter.jsx'
 import {
   DEFAULT_ALIEN_FACE_CALIBRATION,
@@ -14,12 +15,37 @@ import {
 import { SOCKET_SERVER_URL } from '../lib/socket'
 
 const MAX_ACTIVE_CHARACTERS = 10
+const MAX_PENDING_QUEUE_PLAYERS = 200
 const START_X = 22
 const EXIT_X = -22
 const LANE_SPAWN_GAP = 2.4
+const GLOBAL_SPAWN_GAP = 1.8
 const SPAWN_INTERVAL_MS = 3000
 const PARADE_CHARACTER_SCALE = 1.2
 const CONVEYOR_ANIMATIONS = ['idle', 'idle', 'wave', 'dance', 'pose']
+const FACE_SLOT_DEBUG_DEFAULT = {
+  modelLoaded: false,
+  faceSlotFound: false,
+  imageLoaded: false,
+  currentAnimationName: '',
+  faceSlotMaterialName: '',
+  meshNames: [],
+  animationNames: [],
+}
+const CALIBRATION_ANIMATION_OPTIONS = [
+  { value: 'idle', label: 'Idle' },
+  { value: 'wave', label: 'Wave' },
+  { value: 'dance', label: 'Dance' },
+  { value: 'pose', label: 'Pose' },
+]
+const CALIBRATION_TRANSFORM_MODE_OPTIONS = [
+  { value: 'translate', label: 'Move' },
+  { value: 'rotate', label: 'Rotate' },
+]
+const CALIBRATION_TRANSFORM_TARGET_OPTIONS = [
+  { value: 'character', label: 'Character' },
+  { value: 'route', label: 'Route' },
+]
 const CALIBRATION_DEFAULT_FACE_TEXTURE_URL =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%23f2bf8d'/%3E%3Cellipse cx='180' cy='210' rx='30' ry='22' fill='%23683a1d'/%3E%3Cellipse cx='332' cy='210' rx='30' ry='22' fill='%23683a1d'/%3E%3Cpath d='M172 318 Q256 390 340 318' fill='none' stroke='%23854528' stroke-width='34' stroke-linecap='round'/%3E%3C/svg%3E"
 const BLACK_FACE_DATA_URL =
@@ -34,6 +60,10 @@ const PARADE_LANES = [
   { y: -0.27, z: -1.2 },
   { y: -0.27, z: -2.3 },
 ]
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value))
+}
 
 function UfoPlaceholder() {
   return (
@@ -103,9 +133,99 @@ function buildLatestFaceEndpoint() {
   }
 }
 
+function buildFaceTextureUrl(payload) {
+  const inlineBase64 = String(payload?.faceImageBase64 || '')
+  if (inlineBase64) {
+    return inlineBase64
+  }
+
+  const directUrl = String(payload?.faceImageUrl || '')
+  if (!directUrl) {
+    return ''
+  }
+
+  try {
+    return new URL(directUrl, SOCKET_SERVER_URL).toString()
+  } catch {
+    if (directUrl.startsWith('http://') || directUrl.startsWith('https://')) {
+      return directUrl
+    }
+    return `${SOCKET_SERVER_URL.replace(/\/$/, '')}/${directUrl.replace(/^\//, '')}`
+  }
+}
+
 function pickConveyorAnimation() {
   const index = Math.floor(Math.random() * CONVEYOR_ANIMATIONS.length)
   return CONVEYOR_ANIMATIONS[index] || 'idle'
+}
+
+function createCheckerFaceTexture() {
+  const size = 512
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+
+  const cell = 64
+  for (let y = 0; y < size; y += cell) {
+    for (let x = 0; x < size; x += cell) {
+      const isEven = ((x / cell) + (y / cell)) % 2 === 0
+      ctx.fillStyle = isEven ? '#63dcff' : '#153876'
+      ctx.fillRect(x, y, cell, cell)
+    }
+  }
+  ctx.strokeStyle = '#ffffff'
+  ctx.lineWidth = 16
+  ctx.strokeRect(0, 0, size, size)
+
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  texture.flipY = false
+  texture.needsUpdate = true
+
+  return {
+    texture,
+    previewUrl: canvas.toDataURL('image/png'),
+  }
+}
+
+function createCapturedFaceTexture(videoElement) {
+  if (!videoElement) return null
+  const sourceWidth = videoElement.videoWidth || 0
+  const sourceHeight = videoElement.videoHeight || 0
+  if (sourceWidth <= 0 || sourceHeight <= 0) return null
+
+  const size = 512
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+
+  const sourceSize = Math.min(sourceWidth, sourceHeight)
+  const sx = (sourceWidth - sourceSize) / 2
+  const sy = (sourceHeight - sourceSize) / 2
+  ctx.drawImage(videoElement, sx, sy, sourceSize, sourceSize, 0, 0, size, size)
+
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  texture.flipY = false
+  texture.needsUpdate = true
+
+  return {
+    texture,
+    previewUrl: canvas.toDataURL('image/png'),
+  }
+}
+
+function isCharacterCalibrationSearch(search) {
+  return search.get('calibrateFace') === '1'
+    || search.get('calibrateCharacter') === '1'
+    || search.get('calibrate') === 'face'
+    || search.get('calibrate') === 'character'
+    || search.get('mode') === 'face-calibration'
+    || search.get('mode') === 'character-calibration'
 }
 
 async function isValidGlbFile(url) {
@@ -124,13 +244,14 @@ async function isValidGlbFile(url) {
   }
 }
 
-function createQueuedPlayerEntity(payload, laneIndex, laneBackOffset) {
+function createQueuedPlayerEntity(payload, laneIndex, laneBackOffset, globalBackOffset) {
   const lane = PARADE_LANES[laneIndex] || PARADE_LANES[0]
   const playerId = String(payload?.playerId || `queued-${Date.now()}-${Math.floor(Math.random() * 10000)}`)
   const characterType = String(payload?.characterType || 'human')
   const faceImageBase64 = String(payload?.faceImageBase64 || '')
-  // LAN/offline runtime: use socket-transferred base64 directly, no URL dependency.
-  const faceTextureUrl = faceImageBase64
+  const faceTextureUrl = buildFaceTextureUrl(payload)
+  const laneGap = laneBackOffset * LANE_SPAWN_GAP
+  const globalGap = globalBackOffset * GLOBAL_SPAWN_GAP
 
   return {
     playerId,
@@ -142,7 +263,7 @@ function createQueuedPlayerEntity(payload, laneIndex, laneBackOffset) {
     laneIndex,
     laneY: lane.y,
     laneZ: lane.z,
-    spawnX: START_X + laneBackOffset * LANE_SPAWN_GAP,
+    spawnX: START_X + laneGap + globalGap,
     speed: 2.2 + Math.random() * 1.1,
     paradeAnimation: pickConveyorAnimation(),
   }
@@ -158,7 +279,16 @@ function normalizeQueuedPayload(payload) {
   }
 }
 
-function MovingParadeCharacter({ player, onExit, forceBlackFace, faceCalibration, modelScale }) {
+function MovingParadeCharacter({
+  player,
+  onExit,
+  forceBlackFace,
+  modelScale,
+  paradeScale,
+  animationSpeedMultiplier,
+  characterOffset,
+  characterRotation,
+}) {
   const moverRef = useRef(null)
   const xRef = useRef(player.spawnX)
   const hasExitedRef = useRef(false)
@@ -190,20 +320,32 @@ function MovingParadeCharacter({ player, onExit, forceBlackFace, faceCalibration
     <group
       ref={moverRef}
       position={[player.spawnX, player.laneY, player.laneZ]}
-      scale={[PARADE_CHARACTER_SCALE, PARADE_CHARACTER_SCALE, PARADE_CHARACTER_SCALE]}
+      scale={[
+        PARADE_CHARACTER_SCALE * paradeScale,
+        PARADE_CHARACTER_SCALE * paradeScale,
+        PARADE_CHARACTER_SCALE * paradeScale,
+      ]}
     >
       {isAlien ? (
         <Suspense
           fallback={null}
         >
-          <AlienGlbCharacter
-            position={[0, 0, 0]}
-            paradeAnimation={player.paradeAnimation || 'idle'}
-            animationSpeed={Math.max(0.85, player.speed * 0.4)}
-            faceTextureUrl={resolvedFaceTextureUrl}
-            faceCalibration={faceCalibration}
-            modelScale={modelScale}
-          />
+          <group
+            position={[characterOffset.x, characterOffset.y, characterOffset.z]}
+            rotation={[
+              MathUtils.degToRad(characterRotation.x),
+              MathUtils.degToRad(characterRotation.y),
+              MathUtils.degToRad(characterRotation.z),
+            ]}
+          >
+            <AlienGlbCharacter
+              position={[0, 0, 0]}
+              paradeAnimation={player.paradeAnimation || 'idle'}
+              animationSpeed={Math.max(0.65, player.speed * 0.4 * animationSpeedMultiplier)}
+              faceTextureUrl={resolvedFaceTextureUrl}
+              modelScale={modelScale}
+            />
+          </group>
         </Suspense>
       ) : (
         <ParadeCharacter
@@ -219,7 +361,18 @@ function MovingParadeCharacter({ player, onExit, forceBlackFace, faceCalibration
   )
 }
 
-function MainMoonScene({ activePlayers, onPlayerExit, forceBlackFace, faceCalibration, modelScale }) {
+function MainMoonScene({
+  activePlayers,
+  onPlayerExit,
+  forceBlackFace,
+  modelScale,
+  paradeScale,
+  animationSpeedMultiplier,
+  characterOffset,
+  characterRotation,
+  paradeRouteOffset,
+  paradeRouteRotation,
+}) {
   return (
     <>
       <fog attach="fog" args={["#040712", 55, 160]} />
@@ -230,21 +383,243 @@ function MainMoonScene({ activePlayers, onPlayerExit, forceBlackFace, faceCalibr
 
       <UfoPlaceholder />
 
-      {activePlayers.map((player) => (
-        <MovingParadeCharacter
-          key={player.playerId}
-          player={player}
-          onExit={onPlayerExit}
-          forceBlackFace={forceBlackFace}
-          faceCalibration={faceCalibration}
-          modelScale={modelScale}
-        />
-      ))}
+      <group
+        position={[paradeRouteOffset.x, paradeRouteOffset.y, paradeRouteOffset.z]}
+        rotation={[
+          MathUtils.degToRad(paradeRouteRotation.x),
+          MathUtils.degToRad(paradeRouteRotation.y),
+          MathUtils.degToRad(paradeRouteRotation.z),
+        ]}
+      >
+        {activePlayers.map((player) => (
+          <MovingParadeCharacter
+            key={player.playerId}
+            player={player}
+            onExit={onPlayerExit}
+            forceBlackFace={forceBlackFace}
+            modelScale={modelScale}
+            paradeScale={paradeScale}
+            animationSpeedMultiplier={animationSpeedMultiplier}
+            characterOffset={characterOffset}
+            characterRotation={characterRotation}
+          />
+        ))}
+      </group>
     </>
   )
 }
 
-function CalibrationPreviewScene({ faceCalibration, calibrationFaceTextureUrl, modelScale }) {
+function CalibrationPreviewAlienCharacter({
+  faceTextureUrl,
+  faceTexture,
+  modelScale,
+  paradeScale,
+  previewAnimation,
+  animationSpeedMultiplier,
+  characterOffset,
+  characterRotation,
+  onCharacterDebugInfo,
+}) {
+  return (
+    <group
+      position={[characterOffset.x, characterOffset.y, characterOffset.z]}
+      rotation={[
+        MathUtils.degToRad(characterRotation.x),
+        MathUtils.degToRad(characterRotation.y),
+        MathUtils.degToRad(characterRotation.z),
+      ]}
+    >
+      <group scale={[paradeScale, paradeScale, paradeScale]}>
+        <AlienGlbCharacter
+          position={[0, -0.4, 1.0]}
+          paradeAnimation={previewAnimation}
+          animationSpeed={animationSpeedMultiplier}
+          faceTextureUrl={faceTextureUrl}
+          faceTexture={faceTexture}
+          modelScale={modelScale}
+          forceFallbackFace={!faceTextureUrl && !faceTexture}
+          onDebugInfoChange={onCharacterDebugInfo}
+        />
+      </group>
+    </group>
+  )
+}
+
+function CalibrationPreviewCharacterManipulator({
+  faceTextureUrl,
+  faceTexture,
+  modelScale,
+  paradeScale,
+  previewAnimation,
+  animationSpeedMultiplier,
+  characterOffset,
+  characterRotation,
+  transformMode,
+  onTransformChange,
+  onCharacterDebugInfo,
+}) {
+  const controlTargetRef = useRef(null)
+  const isApplyingExternalRef = useRef(false)
+
+  useEffect(() => {
+    const target = controlTargetRef.current
+    if (!target) return
+
+    isApplyingExternalRef.current = true
+    target.position.set(characterOffset.x, characterOffset.y, characterOffset.z)
+    target.rotation.set(
+      MathUtils.degToRad(characterRotation.x),
+      MathUtils.degToRad(characterRotation.y),
+      MathUtils.degToRad(characterRotation.z),
+    )
+    queueMicrotask(() => {
+      isApplyingExternalRef.current = false
+    })
+  }, [
+    characterOffset.x,
+    characterOffset.y,
+    characterOffset.z,
+    characterRotation.x,
+    characterRotation.y,
+    characterRotation.z,
+  ])
+
+  const handleTransformChange = useCallback(() => {
+    if (isApplyingExternalRef.current) return
+    const target = controlTargetRef.current
+    if (!target) return
+
+    const nextOffset = {
+      x: Number(clamp(target.position.x, -10, 10).toFixed(2)),
+      y: Number(clamp(target.position.y, -10, 10).toFixed(2)),
+      z: Number(clamp(target.position.z, -10, 10).toFixed(2)),
+    }
+    const nextRotation = {
+      x: Number(clamp(MathUtils.radToDeg(target.rotation.x), -180, 180).toFixed(1)),
+      y: Number(clamp(MathUtils.radToDeg(target.rotation.y), -180, 180).toFixed(1)),
+      z: Number(clamp(MathUtils.radToDeg(target.rotation.z), -180, 180).toFixed(1)),
+    }
+
+    onTransformChange(nextOffset, nextRotation)
+  }, [onTransformChange])
+
+  return (
+    <TransformControls
+      mode={transformMode}
+      showX
+      showY
+      showZ
+      onObjectChange={handleTransformChange}
+    >
+      <group ref={controlTargetRef}>
+        <CalibrationPreviewAlienCharacter
+          faceTextureUrl={faceTextureUrl}
+          faceTexture={faceTexture}
+          modelScale={modelScale}
+          paradeScale={paradeScale}
+          previewAnimation={previewAnimation}
+          animationSpeedMultiplier={animationSpeedMultiplier}
+          characterOffset={characterOffset}
+          characterRotation={characterRotation}
+          onCharacterDebugInfo={onCharacterDebugInfo}
+        />
+      </group>
+    </TransformControls>
+  )
+}
+
+function CalibrationPreviewRouteManipulator({
+  paradeRouteOffset,
+  paradeRouteRotation,
+  transformMode,
+  onTransformChange,
+  children,
+}) {
+  const controlTargetRef = useRef(null)
+  const isApplyingExternalRef = useRef(false)
+  const shouldRotateYOnly = transformMode === 'rotate'
+
+  useEffect(() => {
+    const target = controlTargetRef.current
+    if (!target) return
+
+    isApplyingExternalRef.current = true
+    target.position.set(paradeRouteOffset.x, paradeRouteOffset.y, paradeRouteOffset.z)
+    target.rotation.set(
+      MathUtils.degToRad(paradeRouteRotation.x),
+      MathUtils.degToRad(paradeRouteRotation.y),
+      MathUtils.degToRad(paradeRouteRotation.z),
+    )
+    queueMicrotask(() => {
+      isApplyingExternalRef.current = false
+    })
+  }, [
+    paradeRouteOffset.x,
+    paradeRouteOffset.y,
+    paradeRouteOffset.z,
+    paradeRouteRotation.x,
+    paradeRouteRotation.y,
+    paradeRouteRotation.z,
+  ])
+
+  const handleTransformChange = useCallback(() => {
+    if (isApplyingExternalRef.current) return
+    const target = controlTargetRef.current
+    if (!target) return
+
+    let rotX = MathUtils.radToDeg(target.rotation.x)
+    let rotY = MathUtils.radToDeg(target.rotation.y)
+    let rotZ = MathUtils.radToDeg(target.rotation.z)
+    if (shouldRotateYOnly) {
+      rotX = 0
+      rotZ = 0
+      target.rotation.set(0, MathUtils.degToRad(rotY), 0)
+    }
+
+    const nextOffset = {
+      x: Number(clamp(target.position.x, -20, 20).toFixed(2)),
+      y: Number(clamp(target.position.y, -20, 20).toFixed(2)),
+      z: Number(clamp(target.position.z, -20, 20).toFixed(2)),
+    }
+    const nextRotation = {
+      x: Number(clamp(rotX, -180, 180).toFixed(1)),
+      y: Number(clamp(rotY, -180, 180).toFixed(1)),
+      z: Number(clamp(rotZ, -180, 180).toFixed(1)),
+    }
+
+    onTransformChange(nextOffset, nextRotation)
+  }, [onTransformChange, shouldRotateYOnly])
+
+  return (
+    <TransformControls
+      mode={transformMode}
+      showX={!shouldRotateYOnly}
+      showY
+      showZ={!shouldRotateYOnly}
+      onObjectChange={handleTransformChange}
+    >
+      <group ref={controlTargetRef}>{children}</group>
+    </TransformControls>
+  )
+}
+
+function CalibrationPreviewScene({
+  faceTextureUrl,
+  faceTexture,
+  modelScale,
+  paradeScale,
+  previewAnimation,
+  animationSpeedMultiplier,
+  characterOffset,
+  characterRotation,
+  paradeRouteOffset,
+  paradeRouteRotation,
+  transformMode,
+  transformTarget,
+  onCharacterTransformChange,
+  onRouteTransformChange,
+  onCharacterDebugInfo,
+}) {
   return (
     <>
       <fog attach="fog" args={["#040712", 55, 160]} />
@@ -253,21 +628,59 @@ function CalibrationPreviewScene({ faceCalibration, calibrationFaceTextureUrl, m
       <pointLight position={[-8, 6, -10]} intensity={1.7} color="#5deaff" distance={34} />
 
       <UfoPlaceholder />
-      <CalibrationShadowRail />
-
-      <Suspense
-        fallback={null}
-      >
-        <AlienGlbCharacter
-          position={[0, -0.4, 1.0]}
-          paradeAnimation="idle"
-          animationSpeed={1}
-          faceTextureUrl={calibrationFaceTextureUrl}
-          faceCalibration={faceCalibration}
-          modelScale={modelScale}
-          forceFallbackFace={!calibrationFaceTextureUrl}
-        />
-      </Suspense>
+      {transformTarget === 'route' ? (
+        <Suspense
+          fallback={null}
+        >
+          <CalibrationPreviewRouteManipulator
+            paradeRouteOffset={paradeRouteOffset}
+            paradeRouteRotation={paradeRouteRotation}
+            transformMode={transformMode}
+            onTransformChange={onRouteTransformChange}
+          >
+            <CalibrationShadowRail />
+            <CalibrationPreviewAlienCharacter
+              faceTextureUrl={faceTextureUrl}
+              faceTexture={faceTexture}
+              modelScale={modelScale}
+              paradeScale={paradeScale}
+              previewAnimation={previewAnimation}
+              animationSpeedMultiplier={animationSpeedMultiplier}
+              characterOffset={characterOffset}
+              characterRotation={characterRotation}
+              onCharacterDebugInfo={onCharacterDebugInfo}
+            />
+          </CalibrationPreviewRouteManipulator>
+        </Suspense>
+      ) : (
+        <group
+          position={[paradeRouteOffset.x, paradeRouteOffset.y, paradeRouteOffset.z]}
+          rotation={[
+            MathUtils.degToRad(paradeRouteRotation.x),
+            MathUtils.degToRad(paradeRouteRotation.y),
+            MathUtils.degToRad(paradeRouteRotation.z),
+          ]}
+        >
+          <CalibrationShadowRail />
+          <Suspense
+            fallback={null}
+          >
+            <CalibrationPreviewCharacterManipulator
+              faceTextureUrl={faceTextureUrl}
+              faceTexture={faceTexture}
+              modelScale={modelScale}
+              paradeScale={paradeScale}
+              previewAnimation={previewAnimation}
+              animationSpeedMultiplier={animationSpeedMultiplier}
+              characterOffset={characterOffset}
+              characterRotation={characterRotation}
+              transformMode={transformMode}
+              onTransformChange={onCharacterTransformChange}
+              onCharacterDebugInfo={onCharacterDebugInfo}
+            />
+          </Suspense>
+        </group>
+      )}
     </>
   )
 }
@@ -289,16 +702,36 @@ function CalibrationSlider({ label, value, min, max, step, onChange }) {
   )
 }
 
+function CalibrationSelect({ label, value, options, onChange }) {
+  const activeOption = options.find((option) => option.value === value) || options[0]
+
+  return (
+    <label className="face-calibration-row">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(String(event.target.value))}>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <strong>{activeOption?.label || value}</strong>
+    </label>
+  )
+}
+
 function MainDisplayPage() {
   const socketRef = useRef(null)
   const laneCursorRef = useRef(0)
   const alienGlbReadyRef = useRef(false)
   const activePlayersRef = useRef([])
-  const isFaceCalibrationMode = useMemo(() => {
+  const cameraVideoRef = useRef(null)
+  const cameraStreamRef = useRef(null)
+  const uploadedFaceUrlRef = useRef('')
+  const faceSlotTextureRef = useRef(null)
+  const isCharacterCalibrationMode = useMemo(() => {
     const search = new URLSearchParams(window.location.search)
-    return search.get('calibrateFace') === '1'
-      || search.get('calibrate') === 'face'
-      || search.get('mode') === 'face-calibration'
+    return isCharacterCalibrationSearch(search)
   }, [])
 
   const [activePlayers, setActivePlayers] = useState([])
@@ -308,11 +741,36 @@ function MainDisplayPage() {
   const [lastQueuedPlayerId, setLastQueuedPlayerId] = useState('')
   const [isAlienGlbReady, setIsAlienGlbReady] = useState(false)
   const [faceCalibration, setFaceCalibration] = useState(() => loadAlienFaceCalibration())
+  const [previewAnimation, setPreviewAnimation] = useState('idle')
+  const [calibrationTransformMode, setCalibrationTransformMode] = useState('translate')
+  const [calibrationTransformTarget, setCalibrationTransformTarget] = useState('character')
   const [calibrationNotice, setCalibrationNotice] = useState('')
   const [calibrationFaceTextureUrl, setCalibrationFaceTextureUrl] = useState('')
   const [calibrationFaceFileName, setCalibrationFaceFileName] = useState('')
+  const [uploadedFaceTextureUrl, setUploadedFaceTextureUrl] = useState('')
+  const [faceSlotTexture, setFaceSlotTexture] = useState(null)
+  const [facePreviewUrl, setFacePreviewUrl] = useState('')
+  const [faceSlotImageLoaded, setFaceSlotImageLoaded] = useState(false)
+  const [faceSlotDebug, setFaceSlotDebug] = useState(FACE_SLOT_DEBUG_DEFAULT)
+  const [isCameraOpen, setIsCameraOpen] = useState(false)
+  const [isCameraStarting, setIsCameraStarting] = useState(false)
+  const [cameraError, setCameraError] = useState('')
   const forceBlackFace = DEBUG_FORCE_BLACK_FACE
   const alienModelScale = Number(faceCalibration?.modelScale || DEFAULT_ALIEN_FACE_CALIBRATION.modelScale || 1)
+  const alienParadeScale = Number(faceCalibration?.paradeScale || DEFAULT_ALIEN_FACE_CALIBRATION.paradeScale || 1)
+  const alienAnimationSpeedMultiplier = Number(
+    faceCalibration?.animationSpeedMultiplier || DEFAULT_ALIEN_FACE_CALIBRATION.animationSpeedMultiplier || 1,
+  )
+  const characterOffset = faceCalibration?.characterOffset || DEFAULT_ALIEN_FACE_CALIBRATION.characterOffset
+  const characterRotation = faceCalibration?.characterRotation || DEFAULT_ALIEN_FACE_CALIBRATION.characterRotation
+  const paradeRouteOffset = faceCalibration?.paradeRouteOffset || DEFAULT_ALIEN_FACE_CALIBRATION.paradeRouteOffset
+  const paradeRouteRotation = faceCalibration?.paradeRouteRotation || DEFAULT_ALIEN_FACE_CALIBRATION.paradeRouteRotation
+  const effectiveFaceTextureUrl = uploadedFaceTextureUrl || calibrationFaceTextureUrl || ''
+  const effectiveFaceTexture = faceSlotTexture
+
+  useEffect(() => {
+    faceSlotTextureRef.current = faceSlotTexture
+  }, [faceSlotTexture])
 
   useEffect(() => {
     alienGlbReadyRef.current = isAlienGlbReady
@@ -322,8 +780,49 @@ function MainDisplayPage() {
     activePlayersRef.current = activePlayers
   }, [activePlayers])
 
+  const releaseUploadedFaceUrl = useCallback(() => {
+    if (uploadedFaceUrlRef.current) {
+      URL.revokeObjectURL(uploadedFaceUrlRef.current)
+      uploadedFaceUrlRef.current = ''
+    }
+  }, [])
+
+  const replaceFaceSlotTexture = useCallback((nextTexture) => {
+    setFaceSlotTexture((previousTexture) => {
+      if (previousTexture && previousTexture !== nextTexture) {
+        previousTexture.dispose()
+      }
+      return nextTexture || null
+    })
+  }, [])
+
+  const stopCameraStream = useCallback(() => {
+    const stream = cameraStreamRef.current
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop())
+    }
+    cameraStreamRef.current = null
+    const videoElement = cameraVideoRef.current
+    if (videoElement) {
+      videoElement.srcObject = null
+    }
+    setIsCameraOpen(false)
+    setIsCameraStarting(false)
+  }, [])
+
   useEffect(() => {
-    if (!isFaceCalibrationMode) return undefined
+    return () => {
+      stopCameraStream()
+      releaseUploadedFaceUrl()
+      if (faceSlotTextureRef.current) {
+        faceSlotTextureRef.current.dispose()
+        faceSlotTextureRef.current = null
+      }
+    }
+  }, [stopCameraStream, releaseUploadedFaceUrl])
+
+  useEffect(() => {
+    if (!isCharacterCalibrationMode) return undefined
 
     let isCancelled = false
     const latestFaceEndpoint = buildLatestFaceEndpoint()
@@ -353,7 +852,7 @@ function MainDisplayPage() {
     return () => {
       isCancelled = true
     }
-  }, [isFaceCalibrationMode])
+  }, [isCharacterCalibrationMode])
 
   useEffect(() => {
     let isMounted = true
@@ -362,8 +861,7 @@ function MainDisplayPage() {
     const MAX_RETRIES = 8
 
     const checkAlienFiles = async () => {
-      const fileUrls = Object.values(ALIEN_GLB_FILES)
-      const checks = await Promise.all(fileUrls.map((url) => isValidGlbFile(url)))
+      const checks = await Promise.all([isValidGlbFile(CHARACTER_GLB_URL)])
       const ready = checks.every(Boolean)
 
       if (!isMounted) return
@@ -411,12 +909,15 @@ function MainDisplayPage() {
         merged.push(payload)
       })
 
+      if (merged.length > MAX_PENDING_QUEUE_PLAYERS) {
+        return merged.slice(-MAX_PENDING_QUEUE_PLAYERS)
+      }
       return merged
     })
   }, [])
 
   useEffect(() => {
-    if (isFaceCalibrationMode) {
+    if (isCharacterCalibrationMode) {
       return undefined
     }
 
@@ -437,7 +938,8 @@ function MainDisplayPage() {
 
         setActivePlayers((currentActive) => {
           const laneCount = currentActive.filter((player) => player.laneIndex === laneIndex).length
-          const queuedPlayer = createQueuedPlayerEntity(nextPayload, laneIndex, laneCount)
+          const globalBackOffset = currentActive.length
+          const queuedPlayer = createQueuedPlayerEntity(nextPayload, laneIndex, laneCount, globalBackOffset)
           setLastQueuedPlayerId(queuedPlayer.playerId)
 
           const deduped = currentActive.filter((player) => player.playerId !== queuedPlayer.playerId)
@@ -451,17 +953,17 @@ function MainDisplayPage() {
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [isFaceCalibrationMode])
+  }, [isCharacterCalibrationMode])
 
   const statusText = useMemo(() => {
-    if (isFaceCalibrationMode) return 'Calibration'
+    if (isCharacterCalibrationMode) return 'Calibration'
     if (connectionState === 'connected') return 'Connected'
     if (connectionState === 'connecting') return 'Connecting'
     return 'Disconnected'
-  }, [connectionState, isFaceCalibrationMode])
+  }, [connectionState, isCharacterCalibrationMode])
 
   useEffect(() => {
-    if (isFaceCalibrationMode) {
+    if (isCharacterCalibrationMode) {
       return undefined
     }
 
@@ -519,7 +1021,7 @@ function MainDisplayPage() {
       socket.disconnect()
       socketRef.current = null
     }
-  }, [enqueuePendingPlayers, isFaceCalibrationMode])
+  }, [enqueuePendingPlayers, isCharacterCalibrationMode])
 
   const updateCalibrationField = useCallback((profileKey, field, value) => {
     setFaceCalibration((previous) => {
@@ -543,6 +1045,110 @@ function MainDisplayPage() {
     setCalibrationNotice('Unsaved changes')
   }, [])
 
+  const updateParadeScale = useCallback((value) => {
+    setFaceCalibration((previous) => ({
+      ...previous,
+      paradeScale: value,
+    }))
+    setCalibrationNotice('Unsaved changes')
+  }, [])
+
+  const updateAnimationSpeedMultiplier = useCallback((value) => {
+    setFaceCalibration((previous) => ({
+      ...previous,
+      animationSpeedMultiplier: value,
+    }))
+    setCalibrationNotice('Unsaved changes')
+  }, [])
+
+  const updateCharacterOffsetField = useCallback((field, value) => {
+    setFaceCalibration((previous) => ({
+      ...previous,
+      characterOffset: {
+        ...(previous?.characterOffset || DEFAULT_ALIEN_FACE_CALIBRATION.characterOffset),
+        [field]: value,
+      },
+    }))
+    setCalibrationNotice('Unsaved changes')
+  }, [])
+
+  const updateCharacterRotationField = useCallback((field, value) => {
+    setFaceCalibration((previous) => ({
+      ...previous,
+      characterRotation: {
+        ...(previous?.characterRotation || DEFAULT_ALIEN_FACE_CALIBRATION.characterRotation),
+        [field]: value,
+      },
+    }))
+    setCalibrationNotice('Unsaved changes')
+  }, [])
+
+  const updateParadeRouteOffsetField = useCallback((field, value) => {
+    setFaceCalibration((previous) => ({
+      ...previous,
+      paradeRouteOffset: {
+        ...(previous?.paradeRouteOffset || DEFAULT_ALIEN_FACE_CALIBRATION.paradeRouteOffset),
+        [field]: value,
+      },
+    }))
+    setCalibrationNotice('Unsaved changes')
+  }, [])
+
+  const updateParadeRouteRotationField = useCallback((field, value) => {
+    setFaceCalibration((previous) => ({
+      ...previous,
+      paradeRouteRotation: {
+        ...(previous?.paradeRouteRotation || DEFAULT_ALIEN_FACE_CALIBRATION.paradeRouteRotation),
+        [field]: value,
+      },
+    }))
+    setCalibrationNotice('Unsaved changes')
+  }, [])
+
+  const handleCharacterTransformChange = useCallback((nextOffset, nextRotation) => {
+    setFaceCalibration((previous) => {
+      const prevOffset = previous?.characterOffset || DEFAULT_ALIEN_FACE_CALIBRATION.characterOffset
+      const prevRotation = previous?.characterRotation || DEFAULT_ALIEN_FACE_CALIBRATION.characterRotation
+      const hasOffsetChange = nextOffset.x !== prevOffset.x
+        || nextOffset.y !== prevOffset.y
+        || nextOffset.z !== prevOffset.z
+      const hasRotationChange = nextRotation.x !== prevRotation.x
+        || nextRotation.y !== prevRotation.y
+        || nextRotation.z !== prevRotation.z
+
+      if (!hasOffsetChange && !hasRotationChange) return previous
+
+      return {
+        ...previous,
+        characterOffset: nextOffset,
+        characterRotation: nextRotation,
+      }
+    })
+    setCalibrationNotice('Unsaved changes')
+  }, [])
+
+  const handleParadeRouteTransformChange = useCallback((nextOffset, nextRotation) => {
+    setFaceCalibration((previous) => {
+      const prevOffset = previous?.paradeRouteOffset || DEFAULT_ALIEN_FACE_CALIBRATION.paradeRouteOffset
+      const prevRotation = previous?.paradeRouteRotation || DEFAULT_ALIEN_FACE_CALIBRATION.paradeRouteRotation
+      const hasOffsetChange = nextOffset.x !== prevOffset.x
+        || nextOffset.y !== prevOffset.y
+        || nextOffset.z !== prevOffset.z
+      const hasRotationChange = nextRotation.x !== prevRotation.x
+        || nextRotation.y !== prevRotation.y
+        || nextRotation.z !== prevRotation.z
+
+      if (!hasOffsetChange && !hasRotationChange) return previous
+
+      return {
+        ...previous,
+        paradeRouteOffset: nextOffset,
+        paradeRouteRotation: nextRotation,
+      }
+    })
+    setCalibrationNotice('Unsaved changes')
+  }, [])
+
   const handleSaveCalibration = useCallback(() => {
     const saved = saveAlienFaceCalibration(faceCalibration)
     setFaceCalibration(saved)
@@ -560,6 +1166,101 @@ function MainDisplayPage() {
     setCalibrationNotice('Reset to default calibration')
   }, [])
 
+  const handleFaceUploadChange = useCallback((event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    replaceFaceSlotTexture(null)
+    releaseUploadedFaceUrl()
+
+    const objectUrl = URL.createObjectURL(file)
+    uploadedFaceUrlRef.current = objectUrl
+    setUploadedFaceTextureUrl(objectUrl)
+    setFacePreviewUrl(objectUrl)
+    setFaceSlotImageLoaded(true)
+    setCameraError('')
+    setCalibrationNotice(`Loaded upload: ${file.name}`)
+    event.target.value = ''
+  }, [replaceFaceSlotTexture, releaseUploadedFaceUrl])
+
+  const handleApplyTestFaceTexture = useCallback(() => {
+    const created = createCheckerFaceTexture()
+    if (!created) {
+      setCalibrationNotice('Could not create checker test texture')
+      return
+    }
+
+    releaseUploadedFaceUrl()
+    setUploadedFaceTextureUrl('')
+    replaceFaceSlotTexture(created.texture)
+    setFacePreviewUrl(created.previewUrl)
+    setFaceSlotImageLoaded(true)
+    setCameraError('')
+    setCalibrationNotice('Applied checker test texture to FaceSlot')
+  }, [releaseUploadedFaceUrl, replaceFaceSlotTexture])
+
+  const handleOpenCamera = useCallback(async () => {
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      setCameraError('Camera API is not available in this browser')
+      return
+    }
+
+    setCameraError('')
+    setIsCameraStarting(true)
+    stopCameraStream()
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false,
+      })
+      cameraStreamRef.current = stream
+
+      const videoElement = cameraVideoRef.current
+      if (videoElement) {
+        videoElement.srcObject = stream
+        await videoElement.play()
+      }
+      setIsCameraOpen(true)
+      setCalibrationNotice('Camera opened. Click capture to apply frame to FaceSlot.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown camera error'
+      setCameraError(`Camera open failed: ${message}`)
+      stopCameraStream()
+    } finally {
+      setIsCameraStarting(false)
+    }
+  }, [stopCameraStream])
+
+  const handleCaptureFromCamera = useCallback(() => {
+    const capture = createCapturedFaceTexture(cameraVideoRef.current)
+    if (!capture) {
+      setCameraError('Camera frame is not ready yet')
+      return
+    }
+
+    releaseUploadedFaceUrl()
+    setUploadedFaceTextureUrl('')
+    replaceFaceSlotTexture(capture.texture)
+    setFacePreviewUrl(capture.previewUrl)
+    setFaceSlotImageLoaded(true)
+    setCameraError('')
+    setCalibrationNotice('Captured camera frame applied to FaceSlot')
+    stopCameraStream()
+  }, [releaseUploadedFaceUrl, replaceFaceSlotTexture, stopCameraStream])
+
+  const handleCloseCamera = useCallback(() => {
+    stopCameraStream()
+    setCalibrationNotice('Camera preview closed')
+  }, [stopCameraStream])
+
+  const handleCharacterDebugInfo = useCallback((nextInfo) => {
+    setFaceSlotDebug((previous) => ({
+      ...previous,
+      ...nextInfo,
+    }))
+  }, [])
+
   return (
     <main className="main-display-page">
       <div className="main-display-canvas-wrap">
@@ -569,19 +1270,36 @@ function MainDisplayPage() {
           gl={{ antialias: true, alpha: true }}
           camera={{ position: [0, 7, 26], fov: 36, near: 0.1, far: 320 }}
         >
-          {isFaceCalibrationMode ? (
+          {isCharacterCalibrationMode ? (
             <CalibrationPreviewScene
-              faceCalibration={faceCalibration}
-              calibrationFaceTextureUrl={calibrationFaceTextureUrl}
+              faceTextureUrl={effectiveFaceTextureUrl}
+              faceTexture={effectiveFaceTexture}
               modelScale={alienModelScale}
+              paradeScale={alienParadeScale}
+              previewAnimation={previewAnimation}
+              animationSpeedMultiplier={alienAnimationSpeedMultiplier}
+              characterOffset={characterOffset}
+              characterRotation={characterRotation}
+              paradeRouteOffset={paradeRouteOffset}
+              paradeRouteRotation={paradeRouteRotation}
+              transformMode={calibrationTransformMode}
+              transformTarget={calibrationTransformTarget}
+              onCharacterTransformChange={handleCharacterTransformChange}
+              onRouteTransformChange={handleParadeRouteTransformChange}
+              onCharacterDebugInfo={handleCharacterDebugInfo}
             />
           ) : (
             <MainMoonScene
               activePlayers={activePlayers}
               onPlayerExit={handlePlayerExit}
               forceBlackFace={forceBlackFace}
-              faceCalibration={faceCalibration}
               modelScale={alienModelScale}
+              paradeScale={alienParadeScale}
+              animationSpeedMultiplier={alienAnimationSpeedMultiplier}
+              characterOffset={characterOffset}
+              characterRotation={characterRotation}
+              paradeRouteOffset={paradeRouteOffset}
+              paradeRouteRotation={paradeRouteRotation}
             />
           )}
         </Canvas>
@@ -589,7 +1307,7 @@ function MainDisplayPage() {
 
       <div className="main-display-overlay">
         <p className="main-display-route">Route: /main</p>
-        {isFaceCalibrationMode ? <p className="main-display-route">Mode: Alien Face Calibration</p> : null}
+        {isCharacterCalibrationMode ? <p className="main-display-route">Mode: Alien Character Calibration</p> : null}
         <h1 className="main-display-title">Moonwalk Selfie Parade</h1>
         <div className="main-display-debug">
           <p>Status: <strong>{statusText}</strong></p>
@@ -597,11 +1315,17 @@ function MainDisplayPage() {
           <p>Socket ID: {socketId || 'n/a'}</p>
           <p>Active Characters: {activePlayers.length}/10</p>
           <p>Pending Queue: {pendingPlayers.length}</p>
-          <p>Spawn Gap: {SPAWN_INTERVAL_MS / 1000}s</p>
+          <p>Spawn Gap: {SPAWN_INTERVAL_MS / 1000}s (lane {LANE_SPAWN_GAP.toFixed(1)} / global {GLOBAL_SPAWN_GAP.toFixed(1)})</p>
           <p>Alien GLB: {isAlienGlbReady ? 'ready' : 'loading or missing (no placeholder fallback)'}</p>
           <p>Face Test: {forceBlackFace ? 'black override ON' : 'live selfie'}</p>
           <p>Alien Model Scale: {alienModelScale.toFixed(2)}x</p>
-          {isFaceCalibrationMode ? (
+          <p>Parade Size: {alienParadeScale.toFixed(2)}x</p>
+          <p>Animation Speed: {alienAnimationSpeedMultiplier.toFixed(2)}x</p>
+          <p>Character Offset: {characterOffset.x.toFixed(2)}, {characterOffset.y.toFixed(2)}, {characterOffset.z.toFixed(2)}</p>
+          <p>Character Rotation: {characterRotation.x.toFixed(1)}°, {characterRotation.y.toFixed(1)}°, {characterRotation.z.toFixed(1)}°</p>
+          <p>Route Offset: {paradeRouteOffset.x.toFixed(2)}, {paradeRouteOffset.y.toFixed(2)}, {paradeRouteOffset.z.toFixed(2)}</p>
+          <p>Route Rotation: {paradeRouteRotation.x.toFixed(1)}°, {paradeRouteRotation.y.toFixed(1)}°, {paradeRouteRotation.z.toFixed(1)}°</p>
+          {isCharacterCalibrationMode ? (
             <p>
               Calibration Face: {calibrationFaceFileName ? `storage/faces/${calibrationFaceFileName}` : 'fallback test face'}
             </p>
@@ -610,18 +1334,68 @@ function MainDisplayPage() {
         </div>
       </div>
 
-      {isFaceCalibrationMode ? (
+      {isCharacterCalibrationMode ? (
         <section className="face-calibration-panel">
-          <h2>Alien Face Calibration</h2>
-          <p>Adjust until the test face fully covers the alien helmet white circle.</p>
-          <p className="face-calibration-hint">URL: <code>/main?calibrateFace=1</code></p>
+          <h2>Alien Character Calibration</h2>
+          <p>Calibrate animation, size, and face fit in one place from the character route.</p>
+          <p className="face-calibration-hint">URL: <code>/main?calibrateCharacter=1</code> or <code>/main?calibrateFace=1</code></p>
+          <h3>FaceSlot Test Flow</h3>
+          <label className="face-calibration-upload">
+            <span>Upload Image</span>
+            <input type="file" accept="image/*" onChange={handleFaceUploadChange} />
+          </label>
+          <div className="face-calibration-actions">
+            <button type="button" className="face-calibration-button primary" onClick={handleApplyTestFaceTexture}>Test Face Texture</button>
+            <button
+              type="button"
+              className="face-calibration-button"
+              onClick={handleOpenCamera}
+              disabled={isCameraStarting}
+            >
+              {isCameraStarting ? 'Opening Camera...' : 'Capture From Camera'}
+            </button>
+            <button
+              type="button"
+              className="face-calibration-button"
+              onClick={handleCaptureFromCamera}
+              disabled={!isCameraOpen}
+            >
+              Capture Frame
+            </button>
+          </div>
+          {isCameraOpen ? (
+            <div className="face-calibration-camera-wrap">
+              <video ref={cameraVideoRef} autoPlay muted playsInline />
+              <button type="button" className="face-calibration-button" onClick={handleCloseCamera}>Close Camera</button>
+            </div>
+          ) : null}
+          {cameraError ? <p className="face-calibration-error">{cameraError}</p> : null}
+          {facePreviewUrl ? (
+            <img
+              className="face-calibration-preview-face"
+              src={facePreviewUrl}
+              alt="Selected face preview"
+            />
+          ) : null}
+          <div className="face-calibration-debug-panel">
+            <p>Model loaded: <strong>{faceSlotDebug.modelLoaded ? 'yes' : 'no'}</strong></p>
+            <p>FaceSlot found: <strong>{faceSlotDebug.faceSlotFound ? 'yes' : 'no'}</strong></p>
+            <p>Uploaded/captured image loaded: <strong>{faceSlotImageLoaded ? 'yes' : 'no'}</strong></p>
+            <p>Current animation name: <strong>{faceSlotDebug.currentAnimationName || previewAnimation}</strong></p>
+          </div>
           <img
             className="face-calibration-default-face"
             src={CALIBRATION_DEFAULT_FACE_TEXTURE_URL}
             alt="Default test face texture for calibration"
           />
 
-          <h3>Front Anchor</h3>
+          <h3>Character Setup</h3>
+          <CalibrationSelect
+            label="Animation"
+            value={previewAnimation}
+            options={CALIBRATION_ANIMATION_OPTIONS}
+            onChange={setPreviewAnimation}
+          />
           <CalibrationSlider
             label="Model Size"
             min={0.6}
@@ -630,6 +1404,119 @@ function MainDisplayPage() {
             value={alienModelScale}
             onChange={updateModelScale}
           />
+          <CalibrationSlider
+            label="Parade Size"
+            min={0.6}
+            max={2.2}
+            step={0.05}
+            value={alienParadeScale}
+            onChange={updateParadeScale}
+          />
+          <CalibrationSlider
+            label="Anim Speed"
+            min={0.5}
+            max={2.5}
+            step={0.05}
+            value={alienAnimationSpeedMultiplier}
+            onChange={updateAnimationSpeedMultiplier}
+          />
+          <CalibrationSelect
+            label="Drag Tool"
+            value={calibrationTransformMode}
+            options={CALIBRATION_TRANSFORM_MODE_OPTIONS}
+            onChange={setCalibrationTransformMode}
+          />
+          <CalibrationSelect
+            label="Drag Target"
+            value={calibrationTransformTarget}
+            options={CALIBRATION_TRANSFORM_TARGET_OPTIONS}
+            onChange={setCalibrationTransformTarget}
+          />
+          <p className="face-calibration-hint">Tip: set target to Route to drag the parade path. Set target to Character to move avatar inside route.</p>
+          <CalibrationSlider
+            label="Pos X"
+            min={-10}
+            max={10}
+            step={0.05}
+            value={characterOffset.x}
+            onChange={(value) => updateCharacterOffsetField('x', value)}
+          />
+          <CalibrationSlider
+            label="Pos Y"
+            min={-10}
+            max={10}
+            step={0.05}
+            value={characterOffset.y}
+            onChange={(value) => updateCharacterOffsetField('y', value)}
+          />
+          <CalibrationSlider
+            label="Pos Z"
+            min={-10}
+            max={10}
+            step={0.05}
+            value={characterOffset.z}
+            onChange={(value) => updateCharacterOffsetField('z', value)}
+          />
+          <CalibrationSlider
+            label="Rot X"
+            min={-180}
+            max={180}
+            step={1}
+            value={characterRotation.x}
+            onChange={(value) => updateCharacterRotationField('x', value)}
+          />
+          <CalibrationSlider
+            label="Rot Y"
+            min={-180}
+            max={180}
+            step={1}
+            value={characterRotation.y}
+            onChange={(value) => updateCharacterRotationField('y', value)}
+          />
+          <CalibrationSlider
+            label="Rot Z"
+            min={-180}
+            max={180}
+            step={1}
+            value={characterRotation.z}
+            onChange={(value) => updateCharacterRotationField('z', value)}
+          />
+
+          <h3>Parade Route</h3>
+          <CalibrationSlider
+            label="Route X"
+            min={-20}
+            max={20}
+            step={0.05}
+            value={paradeRouteOffset.x}
+            onChange={(value) => updateParadeRouteOffsetField('x', value)}
+          />
+          <CalibrationSlider
+            label="Route Y"
+            min={-20}
+            max={20}
+            step={0.05}
+            value={paradeRouteOffset.y}
+            onChange={(value) => updateParadeRouteOffsetField('y', value)}
+          />
+          <CalibrationSlider
+            label="Route Z"
+            min={-20}
+            max={20}
+            step={0.05}
+            value={paradeRouteOffset.z}
+            onChange={(value) => updateParadeRouteOffsetField('z', value)}
+          />
+          <CalibrationSlider
+            label="Route RotY"
+            min={-180}
+            max={180}
+            step={1}
+            value={paradeRouteRotation.y}
+            onChange={(value) => updateParadeRouteRotationField('y', value)}
+          />
+
+          <h3>Front Anchor</h3>
           <CalibrationSlider
             label="X"
             min={-20}

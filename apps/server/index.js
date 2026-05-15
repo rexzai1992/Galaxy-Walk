@@ -14,11 +14,30 @@ const MAIN_PC_SERVER_IP = process.env.MAIN_PC_SERVER_IP || '192.168.1.100'
 const PORT = Number(process.env.SERVER_PORT || 3000)
 const FACES_STORAGE_DIR = join(__dirname, '..', '..', 'storage', 'faces')
 const QUEUE_SNAPSHOT_LIMIT = 100
+const MAX_SERVER_QUEUE = Number(process.env.MAX_SERVER_QUEUE || 300)
 const FACE_IMAGE_FILE_PATTERN = /\.(png|jpe?g)$/i
 
 await mkdir(FACES_STORAGE_DIR, { recursive: true })
 
 const playerQueue = []
+
+function buildPublicFacePath(fileName) {
+  return `/storage/faces/${encodeURIComponent(String(fileName || ''))}`
+}
+
+function buildQueuePlayerPayload(player) {
+  const payload = {
+    playerId: String(player?.playerId || ''),
+    stationId: String(player?.stationId || 'station-unknown'),
+    characterType: String(player?.characterType || 'Human'),
+    createdAt: player?.createdAt || new Date().toISOString(),
+    queuedAt: player?.queuedAt || new Date().toISOString(),
+    faceImageFile: String(player?.faceImageFile || ''),
+    faceImageUrl: player?.faceImageFile ? buildPublicFacePath(player.faceImageFile) : '',
+  }
+
+  return payload
+}
 
 function removeQueuedPlayer(playerId) {
   const index = playerQueue.findIndex((player) => player.playerId === playerId)
@@ -153,6 +172,7 @@ app.use(
   }),
 )
 app.use(express.json({ limit: '15mb' }))
+app.use('/storage/faces', express.static(FACES_STORAGE_DIR))
 
 app.get('/health', (_req, res) => {
   res.json({
@@ -203,7 +223,7 @@ io.on('connection', (socket) => {
   })
 
   socket.emit('queue:snapshot', {
-    players: playerQueue.slice(-QUEUE_SNAPSHOT_LIMIT),
+    players: playerQueue.slice(-QUEUE_SNAPSHOT_LIMIT).map((player) => buildQueuePlayerPayload(player)),
     queueCount: playerQueue.length,
     sentAt: new Date().toISOString(),
   })
@@ -222,6 +242,10 @@ io.on('connection', (socket) => {
       const playerId = randomUUID()
       const savedFace = await saveFaceImageAsPng(faceImageBase64, playerId)
 
+      if (playerQueue.length >= MAX_SERVER_QUEUE) {
+        throw new Error(`Queue is full (${MAX_SERVER_QUEUE}). Please wait and try again.`)
+      }
+
       const queuedPlayer = {
         playerId,
         stationId,
@@ -235,7 +259,7 @@ io.on('connection', (socket) => {
       playerQueue.push(queuedPlayer)
 
       const playerQueuedPayload = {
-        ...queuedPlayer,
+        ...buildQueuePlayerPayload(queuedPlayer),
         queuePosition: playerQueue.length,
       }
 

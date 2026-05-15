@@ -502,6 +502,64 @@ h1 {
   color: #8be7ff;
 }
 
+.face-calibration-upload {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 12px;
+  font-size: clamp(12px, 0.95vw, 14px);
+}
+
+.face-calibration-upload input[type='file'] {
+  width: 100%;
+  min-height: 34px;
+  border-radius: 8px;
+  border: 1px solid rgba(173, 201, 248, 0.38);
+  background: rgba(14, 24, 46, 0.92);
+  color: #eaf2ff;
+  padding: 6px;
+}
+
+.face-calibration-camera-wrap {
+  margin: 10px 0;
+  display: grid;
+  gap: 8px;
+}
+
+.face-calibration-camera-wrap video {
+  width: 100%;
+  max-height: 220px;
+  border-radius: 10px;
+  border: 1px solid rgba(162, 193, 246, 0.34);
+  object-fit: cover;
+  background: #050a17;
+}
+
+.face-calibration-preview-face {
+  width: 88px;
+  height: 88px;
+  border-radius: 10px;
+  border: 1px solid rgba(188, 210, 255, 0.34);
+  background: #10172c;
+  object-fit: cover;
+}
+
+.face-calibration-debug-panel {
+  margin: 10px 0;
+  border: 1px solid rgba(173, 201, 248, 0.34);
+  border-radius: 10px;
+  background: rgba(11, 20, 39, 0.75);
+  padding: 10px;
+}
+
+.face-calibration-debug-panel p {
+  margin: 0;
+  font-size: clamp(11px, 0.85vw, 13px);
+}
+
+.face-calibration-error {
+  color: #ffc7d5;
+}
+
 .face-calibration-default-face {
   width: 84px;
   height: 84px;
@@ -525,6 +583,16 @@ h1 {
 
 .face-calibration-row input[type='range'] {
   width: 100%;
+}
+
+.face-calibration-row select {
+  width: 100%;
+  min-height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(173, 201, 248, 0.38);
+  background: rgba(14, 24, 46, 0.92);
+  color: #eaf2ff;
+  padding: 0 8px;
 }
 
 .face-calibration-row strong {
