@@ -3,10 +3,12 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { CanvasTexture, MathUtils, SRGBColorSpace } from 'three'
 import { TransformControls } from '@react-three/drei'
 import { io } from 'socket.io-client'
+import { useLocation } from 'react-router-dom'
 import AlienGlbCharacter from '../components/main/AlienGlbCharacter.jsx'
 import { ANIMATED_CHARACTER_GLB_URLS, CHARACTER_GLB_URL } from '../components/main/alienGlbConfig'
 import ParadeCharacter from '../components/main/ParadeCharacter.jsx'
 import {
+  ALIEN_FACE_CALIBRATION_STORAGE_KEY,
   DEFAULT_ALIEN_FACE_CALIBRATION,
   clearAlienFaceCalibration,
   loadAlienFaceCalibration,
@@ -51,6 +53,9 @@ const CALIBRATION_DEFAULT_FACE_TEXTURE_URL =
 const BLACK_FACE_DATA_URL =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'%3E%3Crect width='2' height='2' fill='black'/%3E%3C/svg%3E"
 const DEBUG_FORCE_BLACK_FACE = false
+const MAIN_BACKGROUND_VIDEO_PLAYLIST_ENDPOINT = '/backgrounds/videos/playlist.json'
+const MAIN_BACKGROUND_SWITCH_MS = 3 * 60 * 1000
+const MAIN_BACKGROUND_DEFAULT_VIDEO_URLS = []
 
 const PARADE_LANES = [
   { y: -0.27, z: 3.2 },
@@ -65,22 +70,108 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function UfoPlaceholder() {
+function normalizeBackgroundVideoUrls(input) {
+  if (!Array.isArray(input)) return []
+  return input
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+}
+
+function parseBackgroundPlaylistPayload(payload) {
+  if (Array.isArray(payload)) {
+    return normalizeBackgroundVideoUrls(payload)
+  }
+  return normalizeBackgroundVideoUrls(payload?.videos)
+}
+
+function MainDisplayBackgroundVideo() {
+  const videoRef = useRef(null)
+  const [playlist, setPlaylist] = useState(() => normalizeBackgroundVideoUrls(MAIN_BACKGROUND_DEFAULT_VIDEO_URLS))
+  const [videoIndex, setVideoIndex] = useState(0)
+  const [readyVideoSrc, setReadyVideoSrc] = useState('')
+  const [errorVideoSrc, setErrorVideoSrc] = useState('')
+
+  const activeVideoSrc = useMemo(() => {
+    if (playlist.length === 0) return ''
+    return playlist[videoIndex % playlist.length] || ''
+  }, [playlist, videoIndex])
+
+  useEffect(() => {
+    let isCancelled = false
+
+    const loadPlaylist = async () => {
+      try {
+        const response = await fetch(MAIN_BACKGROUND_VIDEO_PLAYLIST_ENDPOINT, { cache: 'no-store' })
+        if (!response.ok) return
+        const payload = await response.json()
+        const urls = parseBackgroundPlaylistPayload(payload)
+        if (urls.length === 0 || isCancelled) return
+        setPlaylist(urls)
+        setVideoIndex(0)
+      } catch {
+        // Keep fallback image if playlist file does not exist yet.
+      }
+    }
+
+    void loadPlaylist()
+    return () => {
+      isCancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (playlist.length <= 1) return undefined
+
+    const intervalId = window.setInterval(() => {
+      setVideoIndex((previous) => (previous + 1) % playlist.length)
+    }, MAIN_BACKGROUND_SWITCH_MS)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [playlist])
+
+  useEffect(() => {
+    const videoElement = videoRef.current
+    if (!videoElement || !activeVideoSrc) return
+
+    const playPromise = videoElement.play()
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => {})
+    }
+  }, [activeVideoSrc])
+
+  const shouldShowVideo = Boolean(
+    activeVideoSrc
+    && readyVideoSrc === activeVideoSrc
+    && errorVideoSrc !== activeVideoSrc,
+  )
+
   return (
-    <group position={[-8, 8.2, -10]}>
-      <mesh rotation-x={MathUtils.degToRad(90)}>
-        <cylinderGeometry args={[2.9, 3.8, 1.1, 42, 1]} />
-        <meshStandardMaterial color="#a5adc2" metalness={0.55} roughness={0.34} />
-      </mesh>
-      <mesh position={[0, 1, 0]}>
-        <sphereGeometry args={[1.45, 28, 18, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshStandardMaterial color="#8af6ff" emissive="#42d5ff" emissiveIntensity={0.4} transparent opacity={0.85} />
-      </mesh>
-      <mesh position={[0, -0.7, 0]}>
-        <ringGeometry args={[2.2, 3.5, 36]} />
-        <meshStandardMaterial color="#8ee7ff" emissive="#53d8ff" emissiveIntensity={0.45} side={2} />
-      </mesh>
-    </group>
+    <div className="main-display-bg-media" aria-hidden="true">
+      {activeVideoSrc ? (
+        <video
+          ref={videoRef}
+          className={`main-display-bg-video ${shouldShowVideo ? 'is-ready' : ''}`}
+          src={activeVideoSrc}
+          autoPlay
+          muted
+          playsInline
+          loop
+          preload="auto"
+          onCanPlay={() => {
+            setReadyVideoSrc(activeVideoSrc)
+            if (errorVideoSrc === activeVideoSrc) {
+              setErrorVideoSrc('')
+            }
+          }}
+          onError={() => {
+            setErrorVideoSrc(activeVideoSrc)
+          }}
+        />
+      ) : null}
+      <div className="main-display-bg-overlay"></div>
+    </div>
   )
 }
 
@@ -381,8 +472,6 @@ function MainMoonScene({
       <directionalLight position={[14, 18, 6]} intensity={1.1} castShadow />
       <pointLight position={[-8, 6, -10]} intensity={1.7} color="#5deaff" distance={34} />
 
-      <UfoPlaceholder />
-
       <group
         position={[paradeRouteOffset.x, paradeRouteOffset.y, paradeRouteOffset.z]}
         rotation={[
@@ -627,7 +716,6 @@ function CalibrationPreviewScene({
       <directionalLight position={[14, 18, 6]} intensity={1.2} castShadow />
       <pointLight position={[-8, 6, -10]} intensity={1.7} color="#5deaff" distance={34} />
 
-      <UfoPlaceholder />
       {transformTarget === 'route' ? (
         <Suspense
           fallback={null}
@@ -721,6 +809,7 @@ function CalibrationSelect({ label, value, options, onChange }) {
 }
 
 function MainDisplayPage() {
+  const location = useLocation()
   const socketRef = useRef(null)
   const laneCursorRef = useRef(0)
   const alienGlbReadyRef = useRef(false)
@@ -730,9 +819,9 @@ function MainDisplayPage() {
   const uploadedFaceUrlRef = useRef('')
   const faceSlotTextureRef = useRef(null)
   const isCharacterCalibrationMode = useMemo(() => {
-    const search = new URLSearchParams(window.location.search)
+    const search = new URLSearchParams(location.search)
     return isCharacterCalibrationSearch(search)
-  }, [])
+  }, [location.search])
 
   const [activePlayers, setActivePlayers] = useState([])
   const [pendingPlayers, setPendingPlayers] = useState([])
@@ -779,6 +868,33 @@ function MainDisplayPage() {
   useEffect(() => {
     activePlayersRef.current = activePlayers
   }, [activePlayers])
+
+  useEffect(() => {
+    const syncFromStorage = () => {
+      setFaceCalibration(loadAlienFaceCalibration())
+    }
+
+    const handleStorage = (event) => {
+      if (event.key && event.key !== ALIEN_FACE_CALIBRATION_STORAGE_KEY) return
+      syncFromStorage()
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncFromStorage()
+      }
+    }
+
+    window.addEventListener('storage', handleStorage)
+    window.addEventListener('focus', syncFromStorage)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      window.removeEventListener('storage', handleStorage)
+      window.removeEventListener('focus', syncFromStorage)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [])
 
   const releaseUploadedFaceUrl = useCallback(() => {
     if (uploadedFaceUrlRef.current) {
@@ -1266,6 +1382,7 @@ function MainDisplayPage() {
 
   return (
     <main className="main-display-page">
+      <MainDisplayBackgroundVideo />
       <div className="main-display-canvas-wrap">
         <Canvas
           shadows

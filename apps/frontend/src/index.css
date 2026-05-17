@@ -558,18 +558,43 @@ h1 {
 .main-display-page {
   position: relative;
   min-height: calc(100vh - 54px);
-  background-image:
-    linear-gradient(180deg, rgba(8, 12, 28, 0.3) 0%, rgba(6, 10, 24, 0.46) 60%, rgba(7, 10, 20, 0.62) 100%),
-    url('/backgrounds/moon-space-background.png');
+  background-image: url('/backgrounds/moon-space-background.png');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
   overflow: hidden;
 }
 
+.main-display-bg-media {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.main-display-bg-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 560ms ease;
+}
+
+.main-display-bg-video.is-ready {
+  opacity: 1;
+}
+
+.main-display-bg-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(8, 12, 28, 0.3) 0%, rgba(6, 10, 24, 0.46) 60%, rgba(7, 10, 20, 0.62) 100%);
+}
+
 .main-display-canvas-wrap {
   position: absolute;
   inset: 0;
+  z-index: 1;
 }
 
 .main-display-canvas-wrap canvas {

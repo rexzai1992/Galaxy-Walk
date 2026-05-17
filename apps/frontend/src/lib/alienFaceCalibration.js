@@ -1,4 +1,4 @@
-const ALIEN_FACE_CALIBRATION_STORAGE_KEY = 'moonwalk.alienFaceCalibration.v1'
+export const ALIEN_FACE_CALIBRATION_STORAGE_KEY = 'moonwalk.alienFaceCalibration.v1'
 
 export const DEFAULT_ALIEN_FACE_CALIBRATION = {
   modelScale: 1,
