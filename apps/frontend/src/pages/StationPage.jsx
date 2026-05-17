@@ -28,9 +28,13 @@ function StationPage() {
     setScreen('capture')
   }
 
-  const handleContinueFromCapture = (facePngBase64) => {
+  const handleContinueFromCapture = (facePngBase64, characterId) => {
+    if (!characterId) {
+      return
+    }
+
     setFaceCropPngBase64(facePngBase64)
-    setSelectedCharacter('')
+    setSelectedCharacter(characterId)
     setJoinMessage('')
     setScreen('character')
   }
@@ -110,11 +114,13 @@ function StationPage() {
           <>
             <p className="station-eyebrow">Step 2 of 3</p>
             <h1 className="station-title">Webcam Capture</h1>
-            <p className="station-text">Position your face inside the frame, capture, confirm the crop, then continue.</p>
+            <p className="station-text">Position your face in the frame, capture, pick your character, then continue.</p>
 
             <StationWebcamCapture
               onBack={() => setScreen('welcome')}
               onContinue={handleContinueFromCapture}
+              selectedCharacter={selectedCharacter}
+              onSelectCharacter={setSelectedCharacter}
             />
           </>
         ) : null}
@@ -122,8 +128,8 @@ function StationPage() {
         {screen === 'character' ? (
           <>
             <p className="station-eyebrow">Step 3 of 3</p>
-            <h1 className="station-title">Choose Your Character</h1>
-            <p className="station-text">Tap one character card to pair with your selfie, then join the parade.</p>
+            <h1 className="station-title">Ready To Join</h1>
+            <p className="station-text">Character already selected. Submit now to join the parade queue.</p>
             <p className="station-status-muted">Station ID: {stationId}</p>
             <p className="station-status-muted">Server: {SOCKET_SERVER_URL}</p>
 
@@ -138,20 +144,6 @@ function StationPage() {
                   Selected Character:{' '}
                   <strong>{selectedCharacter ? CHARACTER_OPTIONS.find((character) => character.id === selectedCharacter)?.name : 'None'}</strong>
                 </p>
-              </div>
-
-              <div className="station-character-grid">
-                {CHARACTER_OPTIONS.map((character) => (
-                  <button
-                    key={character.id}
-                    type="button"
-                    className={`station-character-card ${selectedCharacter === character.id ? 'active' : ''}`}
-                    onClick={() => setSelectedCharacter(character.id)}
-                  >
-                    <span className="station-character-name">{character.name}</span>
-                    <span className="station-character-tag">{character.tag}</span>
-                  </button>
-                ))}
               </div>
             </div>
 

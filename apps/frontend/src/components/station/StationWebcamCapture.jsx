@@ -10,6 +10,13 @@ const CAMERA_CONSTRAINTS = {
   },
 }
 
+const CHARACTER_PREVIEW_OPTIONS = [
+  { id: 'astronaut', name: 'Astronaut' },
+  { id: 'alien', name: 'Alien' },
+  { id: 'human', name: 'Human' },
+  { id: 'robot', name: 'Robot' },
+]
+
 function getVisibleVideoSourceRect(videoElement) {
   const sourceWidth = videoElement.videoWidth || 1280
   const sourceHeight = videoElement.videoHeight || 720
@@ -42,7 +49,7 @@ function getVisibleVideoSourceRect(videoElement) {
   }
 }
 
-function StationWebcamCapture({ onBack, onContinue }) {
+function StationWebcamCapture({ onBack, onContinue, selectedCharacter, onSelectCharacter }) {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
@@ -53,7 +60,6 @@ function StationWebcamCapture({ onBack, onContinue }) {
   const [croppedFacePng, setCroppedFacePng] = useState('')
   const [cropStatus, setCropStatus] = useState('idle')
   const [cropErrorMessage, setCropErrorMessage] = useState('')
-  const [isCropConfirmed, setIsCropConfirmed] = useState(false)
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -143,7 +149,6 @@ function StationWebcamCapture({ onBack, onContinue }) {
     setCroppedFacePng('')
     setCropErrorMessage('')
     setCropStatus('generating')
-    setIsCropConfirmed(false)
 
     try {
       const centeredFacePng = await createCenteredCircularFacePng(base64Image, {
@@ -167,43 +172,81 @@ function StationWebcamCapture({ onBack, onContinue }) {
     setCroppedFacePng('')
     setCropStatus('idle')
     setCropErrorMessage('')
-    setIsCropConfirmed(false)
     await requestCamera()
   }
 
-  const confirmCrop = () => {
-    if (!croppedFacePng) {
-      return
+  const selectCharacter = useCallback((characterId) => {
+    if (typeof onSelectCharacter === 'function') {
+      onSelectCharacter(characterId)
     }
-
-    setIsCropConfirmed(true)
-  }
+  }, [onSelectCharacter])
 
   const handleContinue = () => {
-    if (!croppedFacePng || !isCropConfirmed) {
+    if (!croppedFacePng || !selectedCharacter) {
       return
     }
 
-    onContinue(croppedFacePng)
+    onContinue(croppedFacePng, selectedCharacter)
   }
+
+  const isFacePreviewReady = cropStatus === 'ready' && Boolean(croppedFacePng)
+  const previewFallbackMessage = cropStatus === 'generating'
+    ? 'Generating centered face crop...'
+    : 'Unable to crop preview'
 
   return (
     <div className="station-capture-layout">
       <div className="station-camera-frame">
         {capturedSelfie ? (
-          <div className="station-helmet-preview">
-            <div className="station-helmet-shell">
-              <div className="station-helmet-face-ring">
-                {cropStatus === 'ready' && croppedFacePng ? (
-                  <img className="station-selfie-preview" src={croppedFacePng} alt="Centered circular face crop preview" />
-                ) : (
-                  <div className="station-crop-waiting">
-                    {cropStatus === 'generating' ? 'Generating centered face crop...' : 'Unable to crop preview'}
-                  </div>
-                )}
+          <div className="station-capture-preview-split">
+            <div className="station-helmet-preview">
+              <div className="station-helmet-shell">
+                <div className="station-helmet-face-ring">
+                  {isFacePreviewReady ? (
+                    <img className="station-selfie-preview" src={croppedFacePng} alt="Centered circular face crop preview" />
+                  ) : (
+                    <div className="station-crop-waiting">{previewFallbackMessage}</div>
+                  )}
+                </div>
               </div>
+              <p className="station-camera-hint">Face shape preview</p>
             </div>
-            <p className="station-camera-hint">Preview inside helmet face frame</p>
+
+            <div className="station-capture-character-side">
+              <p className="station-capture-character-title">Character Preview</p>
+              <p className="station-capture-character-subtitle">Tap one character here, then continue.</p>
+
+              <div className="station-capture-character-mini-grid">
+                {CHARACTER_PREVIEW_OPTIONS.map((character) => (
+                  <button
+                    key={character.id}
+                    type="button"
+                    className={`station-capture-character-mini station-capture-character-mini--${character.id} ${selectedCharacter === character.id ? 'active' : ''}`}
+                    onClick={() => selectCharacter(character.id)}
+                    aria-pressed={selectedCharacter === character.id}
+                  >
+                    <div className="station-capture-character-mini-head">
+                      <div className="station-capture-character-mini-face-ring">
+                        {isFacePreviewReady ? (
+                          <img
+                            className="station-selfie-preview"
+                            src={croppedFacePng}
+                            alt={`${character.name} face preview`}
+                          />
+                        ) : (
+                          <span className="station-capture-character-mini-placeholder">...</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="station-capture-character-mini-body"></div>
+                    <p className="station-capture-character-mini-name">{character.name}</p>
+                  </button>
+                ))}
+              </div>
+              <p className="station-capture-character-selected">
+                Selected: {selectedCharacter ? CHARACTER_PREVIEW_OPTIONS.find((character) => character.id === selectedCharacter)?.name : 'None'}
+              </p>
+            </div>
           </div>
         ) : (
           <video ref={videoRef} className="station-camera-video" autoPlay playsInline muted />
@@ -234,26 +277,19 @@ function StationWebcamCapture({ onBack, onContinue }) {
             </button>
             <button
               type="button"
-              className="station-secondary-button station-capture-button"
-              onClick={confirmCrop}
-              disabled={!croppedFacePng || isCropConfirmed}
-            >
-              {isCropConfirmed ? 'Confirmed' : 'Confirm Face Crop'}
-            </button>
-            <button
-              type="button"
               className="station-primary-button station-capture-button"
               onClick={handleContinue}
-              disabled={!isCropConfirmed}
+              disabled={!croppedFacePng || !selectedCharacter}
             >
               Continue
             </button>
           </>
         )}
-
-        <button type="button" className="station-secondary-button station-capture-button" onClick={onBack}>
-          Back
-        </button>
+        {!capturedSelfie ? (
+          <button type="button" className="station-secondary-button station-capture-button" onClick={onBack}>
+            Back
+          </button>
+        ) : null}
       </div>
     </div>
   )

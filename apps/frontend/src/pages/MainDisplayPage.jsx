@@ -4,7 +4,7 @@ import { CanvasTexture, MathUtils, SRGBColorSpace } from 'three'
 import { TransformControls } from '@react-three/drei'
 import { io } from 'socket.io-client'
 import AlienGlbCharacter from '../components/main/AlienGlbCharacter.jsx'
-import { CHARACTER_GLB_URL } from '../components/main/alienGlbConfig'
+import { ANIMATED_CHARACTER_GLB_URLS, CHARACTER_GLB_URL } from '../components/main/alienGlbConfig'
 import ParadeCharacter from '../components/main/ParadeCharacter.jsx'
 import {
   DEFAULT_ALIEN_FACE_CALIBRATION,
@@ -859,9 +859,12 @@ function MainDisplayPage() {
     let retryTimerId = null
     let retryCount = 0
     const MAX_RETRIES = 8
+    const glbUrlsToCheck = Array.from(
+      new Set([CHARACTER_GLB_URL, ...Object.values(ANIMATED_CHARACTER_GLB_URLS)]),
+    )
 
     const checkAlienFiles = async () => {
-      const checks = await Promise.all([isValidGlbFile(CHARACTER_GLB_URL)])
+      const checks = await Promise.all(glbUrlsToCheck.map((url) => isValidGlbFile(url)))
       const ready = checks.every(Boolean)
 
       if (!isMounted) return

@@ -238,6 +238,20 @@ h1 {
   padding: clamp(14px, 2vw, 24px);
 }
 
+.station-capture-preview-split {
+  width: 100%;
+  min-height: clamp(240px, 42vw, 430px);
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: clamp(12px, 2vw, 24px);
+  align-items: center;
+  padding: clamp(10px, 2vw, 18px);
+}
+
+.station-helmet-preview .station-camera-hint {
+  margin: 10px 0 0;
+}
+
 .station-helmet-shell {
   width: min(76vw, 360px);
   aspect-ratio: 1 / 1;
@@ -269,6 +283,145 @@ h1 {
   font-size: clamp(15px, 2vw, 22px);
   line-height: 1.3;
   padding: 16px;
+}
+
+.station-capture-character-side {
+  min-height: 100%;
+  border: 1px solid rgba(160, 197, 255, 0.3);
+  border-radius: 18px;
+  background:
+    linear-gradient(160deg, rgba(17, 28, 58, 0.84), rgba(11, 20, 45, 0.9)),
+    radial-gradient(circle at 75% 8%, rgba(134, 214, 255, 0.16), transparent 38%);
+  padding: clamp(10px, 1.8vw, 16px);
+}
+
+.station-capture-character-title {
+  margin: 0;
+  font-size: clamp(15px, 1.9vw, 22px);
+  color: #ecf5ff;
+  letter-spacing: 0.01em;
+  font-weight: 700;
+}
+
+.station-capture-character-subtitle {
+  margin: 6px 0 10px;
+  color: #bdd2f5;
+  font-size: clamp(12px, 1.35vw, 16px);
+  line-height: 1.3;
+}
+
+.station-capture-character-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.station-capture-character-mini {
+  --mini-accent-rgb: 159, 213, 255;
+  --mini-body: #5f86be;
+  border: 1px solid rgba(var(--mini-accent-rgb), 0.52);
+  border-radius: 14px;
+  padding: 8px 6px;
+  background:
+    linear-gradient(175deg, rgba(var(--mini-accent-rgb), 0.18), rgba(12, 20, 40, 0.92));
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 6px;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  width: 100%;
+  color: inherit;
+  text-align: center;
+  font: inherit;
+}
+
+.station-capture-character-mini:hover {
+  transform: translateY(-1px);
+}
+
+.station-capture-character-mini:focus-visible {
+  outline: 2px solid rgba(153, 231, 255, 0.85);
+  outline-offset: 2px;
+}
+
+.station-capture-character-mini.active {
+  border-color: rgba(136, 255, 211, 0.96);
+  box-shadow: 0 0 0 2px rgba(136, 255, 211, 0.3), 0 14px 24px rgba(73, 203, 176, 0.22);
+  transform: translateY(-1px);
+}
+
+.station-capture-character-mini--astronaut {
+  --mini-accent-rgb: 184, 218, 255;
+  --mini-body: #7c9bc7;
+}
+
+.station-capture-character-mini--alien {
+  --mini-accent-rgb: 141, 237, 164;
+  --mini-body: #4b9162;
+}
+
+.station-capture-character-mini--human {
+  --mini-accent-rgb: 153, 184, 255;
+  --mini-body: #4d6ea7;
+}
+
+.station-capture-character-mini--robot {
+  --mini-accent-rgb: 139, 232, 255;
+  --mini-body: #6a86b8;
+}
+
+.station-capture-character-mini-head {
+  width: clamp(52px, 6.6vw, 72px);
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  padding: 5px;
+  background:
+    radial-gradient(circle at 35% 28%, #f7fbff 0%, #dbe8ff 42%, #9bb2d9 76%, #748ab1 100%);
+  box-shadow:
+    inset 0 -8px 12px rgba(36, 52, 89, 0.3),
+    0 8px 16px rgba(0, 0, 0, 0.28);
+  display: grid;
+  place-items: center;
+}
+
+.station-capture-character-mini-face-ring {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid rgba(210, 227, 255, 0.78);
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(35, 58, 105, 0.5), rgba(18, 29, 57, 0.55));
+  display: grid;
+  place-items: center;
+}
+
+.station-capture-character-mini-placeholder {
+  color: #d4e5ff;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.station-capture-character-mini-body {
+  width: clamp(40px, 5.2vw, 58px);
+  height: clamp(24px, 3.3vw, 36px);
+  border-radius: 18px 18px 12px 12px;
+  background: linear-gradient(180deg, rgba(var(--mini-accent-rgb), 0.48), var(--mini-body));
+  box-shadow: inset 0 -6px 10px rgba(26, 37, 69, 0.36);
+}
+
+.station-capture-character-mini-name {
+  margin: 0;
+  color: #e9f2ff;
+  font-size: clamp(12px, 1.35vw, 15px);
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.station-capture-character-selected {
+  margin: 10px 0 0;
+  color: #d7e8ff;
+  font-size: clamp(12px, 1.3vw, 15px);
 }
 
 .station-camera-hint,
@@ -645,6 +798,16 @@ h1 {
 
   .station-capture-actions {
     gap: 10px;
+  }
+
+  .station-capture-preview-split {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .station-capture-character-side {
+    width: 100%;
   }
 
   .station-helmet-shell {

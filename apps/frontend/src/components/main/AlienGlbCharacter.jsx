@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useFrame } from '@react-three/fiber'
 import { useAnimations, useGLTF } from '@react-three/drei'
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
 import * as THREE from 'three'
-import { CHARACTER_GLB_URL } from './alienGlbConfig'
+import { ANIMATED_CHARACTER_GLB_URLS, CHARACTER_GLB_URL } from './alienGlbConfig'
 
 const FACE_SLOT_NAME = 'FaceSlot'
 const DEFAULT_ANIMATION_INTENT = 'idle'
@@ -12,6 +13,7 @@ const ANIMATION_KEYWORD_MAP = {
   dance: ['dance', 'groove'],
   pose: ['pose', 'jump', 'celebrate'],
 }
+const STATIC_CLIP_DURATION_EPSILON = 0.05
 let didLogGlbDebug = false
 
 function resolveAnimationIntent(paradeAnimation) {
@@ -104,6 +106,21 @@ function createFallbackFaceTexture() {
   return texture
 }
 
+function orientUserFaceTexture(texture) {
+  if (!texture) return null
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.flipY = false
+  texture.wrapS = THREE.ClampToEdgeWrapping
+  texture.wrapT = THREE.ClampToEdgeWrapping
+  texture.generateMipmaps = false
+  texture.minFilter = THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  texture.repeat.set(1, -1)
+  texture.offset.set(0, 1)
+  texture.needsUpdate = true
+  return texture
+}
+
 function getFaceSlotMaterial(mesh) {
   if (!mesh) return null
   if (Array.isArray(mesh.material)) {
@@ -120,13 +137,23 @@ function getFaceSlotMaterialName(mesh) {
 
 function replaceFaceSlotMaterial(mesh, texture) {
   if (!mesh) return
+  const hasFaceTexture = Boolean(texture)
 
   const nextMaterial = new THREE.MeshBasicMaterial({
     map: texture || null,
     side: THREE.DoubleSide,
+    transparent: false,
+    alphaTest: 0,
+    depthTest: true,
+    depthWrite: true,
+    polygonOffset: hasFaceTexture,
+    polygonOffsetFactor: hasFaceTexture ? -0.6 : 0,
+    polygonOffsetUnits: hasFaceTexture ? -0.6 : 0,
     toneMapped: false,
   })
   nextMaterial.name = 'FaceSlotPhotoMaterial'
+  nextMaterial.forceSinglePass = true
+  nextMaterial.blending = THREE.NoBlending
 
   const existingMaterial = getFaceSlotMaterial(mesh)
   if (Array.isArray(mesh.material)) {
@@ -141,15 +168,58 @@ function replaceFaceSlotMaterial(mesh, texture) {
     existingMaterial.dispose()
   }
   mesh.userData.__faceSlotMaterialOwned = true
+  mesh.frustumCulled = false
+  mesh.renderOrder = 8
+}
+
+function createOpaqueFaceTextureFromImage(image) {
+  if (!image || typeof document === 'undefined') return null
+
+  const width = Number(image.width || image.videoWidth || image.naturalWidth || 0)
+  const height = Number(image.height || image.videoHeight || image.naturalHeight || 0)
+  if (width <= 0 || height <= 0) return null
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d', { alpha: false })
+  if (!ctx) return null
+
+  // Remove transparent regions from the face crop so helmet interior never shows as white.
+  ctx.fillStyle = '#0f1f45'
+  ctx.fillRect(0, 0, width, height)
+  ctx.drawImage(image, 0, 0, width, height)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  return orientUserFaceTexture(texture)
 }
 
 function cloneConfiguredTexture(sourceTexture) {
   if (!sourceTexture) return null
   const clonedTexture = sourceTexture.clone()
-  clonedTexture.colorSpace = THREE.SRGBColorSpace
-  clonedTexture.flipY = false
-  clonedTexture.needsUpdate = true
-  return clonedTexture
+  return orientUserFaceTexture(clonedTexture)
+}
+
+function hasMotionTrack(clip) {
+  if (!clip || !Array.isArray(clip.tracks)) return false
+  if (!Number.isFinite(clip.duration) || clip.duration <= STATIC_CLIP_DURATION_EPSILON) return false
+  return clip.tracks.some((track) => Number(track?.times?.length || 0) > 1)
+}
+
+function isAnimationAction(action) {
+  return Boolean(
+    action
+    && typeof action.stop === 'function'
+    && typeof action.play === 'function'
+    && typeof action.reset === 'function'
+    && typeof action.fadeIn === 'function'
+    && typeof action.setEffectiveWeight === 'function'
+    && typeof action.setEffectiveTimeScale === 'function',
+  )
+}
+
+function collectDefinedActions(actions) {
+  return Object.values(actions || {}).filter((action) => isAnimationAction(action))
 }
 
 function AlienGlbCharacter({
@@ -163,6 +233,8 @@ function AlienGlbCharacter({
   onDebugInfoChange,
 }) {
   const groupRef = useRef(null)
+  const motionPhaseRef = useRef(0)
+  const baseLocalYRef = useRef(Number(position?.[1] || 0))
   const faceSlotMeshRef = useRef(null)
   const activeActionRef = useRef(null)
   const currentAnimationNameRef = useRef('')
@@ -170,32 +242,40 @@ function AlienGlbCharacter({
   const faceSlotMaterialNameRef = useRef('')
   const faceImageLoadedRef = useRef(false)
   const fallbackFaceTexture = useMemo(() => createFallbackFaceTexture(), [])
+  const animationIntent = useMemo(() => resolveAnimationIntent(paradeAnimation), [paradeAnimation])
+  const resolvedAnimationGlbUrl = useMemo(() => {
+    return ANIMATED_CHARACTER_GLB_URLS[animationIntent] || CHARACTER_GLB_URL
+  }, [animationIntent])
 
-  const characterGltf = useGLTF(CHARACTER_GLB_URL)
+  const baseCharacterGltf = useGLTF(CHARACTER_GLB_URL)
+  const animationCharacterGltf = useGLTF(resolvedAnimationGlbUrl)
   const clips = useMemo(() => {
-    return Array.isArray(characterGltf?.animations) ? characterGltf.animations : []
-  }, [characterGltf])
+    const animationClips = Array.isArray(animationCharacterGltf?.animations) ? animationCharacterGltf.animations : []
+    if (animationClips.length > 0) return animationClips
+    return Array.isArray(baseCharacterGltf?.animations) ? baseCharacterGltf.animations : []
+  }, [animationCharacterGltf, baseCharacterGltf])
   const meshNames = useMemo(() => {
-    if (!characterGltf?.scene) return []
-    return collectMeshNames(characterGltf.scene)
-  }, [characterGltf])
+    if (!baseCharacterGltf?.scene) return []
+    return collectMeshNames(baseCharacterGltf.scene)
+  }, [baseCharacterGltf])
   const animationNames = useMemo(() => collectAnimationNames(clips), [clips])
 
   const clonedScene = useMemo(() => {
-    if (!characterGltf?.scene) return null
-    return SkeletonUtils.clone(characterGltf.scene)
-  }, [characterGltf])
+    if (!baseCharacterGltf?.scene) return null
+    return SkeletonUtils.clone(baseCharacterGltf.scene)
+  }, [baseCharacterGltf])
 
   const targetClipName = useMemo(() => {
     return resolveAnimationClipName(paradeAnimation, clips)
   }, [paradeAnimation, clips])
+  const hasPlayableClipAnimation = useMemo(() => clips.some((clip) => hasMotionTrack(clip)), [clips])
 
   const { actions } = useAnimations(clips, groupRef)
 
   const emitDebug = useCallback(() => {
     if (!onDebugInfoChange) return
     onDebugInfoChange({
-      modelLoaded: Boolean(characterGltf?.scene),
+      modelLoaded: Boolean(baseCharacterGltf?.scene),
       faceSlotFound: faceSlotFoundRef.current,
       faceSlotMaterialName: faceSlotMaterialNameRef.current,
       imageLoaded: faceImageLoadedRef.current,
@@ -203,24 +283,26 @@ function AlienGlbCharacter({
       meshNames,
       animationNames,
     })
-  }, [onDebugInfoChange, characterGltf, targetClipName, meshNames, animationNames])
+  }, [onDebugInfoChange, baseCharacterGltf, targetClipName, meshNames, animationNames])
 
   useEffect(() => {
-    if (!characterGltf?.scene || didLogGlbDebug) return
+    if (!baseCharacterGltf?.scene || didLogGlbDebug) return
     didLogGlbDebug = true
 
-    const sourceFaceSlotMesh = findFaceSlotMesh(characterGltf.scene)
+    const sourceFaceSlotMesh = findFaceSlotMesh(baseCharacterGltf.scene)
     const isFound = Boolean(sourceFaceSlotMesh)
     const sourceFaceSlotMaterialName = getFaceSlotMaterialName(sourceFaceSlotMesh)
 
     console.log('[AlienGlbCharacter] GLB mesh names:', meshNames)
+    console.log('[AlienGlbCharacter] Base GLB url:', CHARACTER_GLB_URL)
+    console.log('[AlienGlbCharacter] Animation GLB url:', resolvedAnimationGlbUrl)
     console.log('[AlienGlbCharacter] FaceSlot found:', isFound)
     console.log('[AlienGlbCharacter] FaceSlot material name:', sourceFaceSlotMaterialName || '(none)')
     console.log('[AlienGlbCharacter] GLB animation names:', animationNames)
     if (!isFound) {
-      console.warn('[AlienGlbCharacter] FaceSlot mesh not found in /models/character.glb')
+      console.warn('[AlienGlbCharacter] FaceSlot mesh not found in base character GLB')
     }
-  }, [characterGltf, meshNames, animationNames])
+  }, [baseCharacterGltf, meshNames, animationNames, resolvedAnimationGlbUrl])
 
   useEffect(() => {
     if (!clonedScene) {
@@ -242,6 +324,62 @@ function AlienGlbCharacter({
   }, [clonedScene, emitDebug])
 
   useEffect(() => {
+    motionPhaseRef.current = Math.random() * Math.PI * 2
+  }, [])
+
+  useEffect(() => {
+    baseLocalYRef.current = Number(position?.[1] || 0)
+  }, [position])
+
+  useFrame((_, delta) => {
+    const root = groupRef.current
+    if (!root) return
+
+    if (hasPlayableClipAnimation) {
+      root.position.y = baseLocalYRef.current
+      root.rotation.x = 0
+      root.rotation.z = 0
+      return
+    }
+
+    const speedScale = Math.max(0.35, animationSpeed)
+    motionPhaseRef.current += delta * (1.8 + speedScale * 1.35)
+    const phase = motionPhaseRef.current
+    const baseY = baseLocalYRef.current
+
+    if (animationIntent === 'wave') {
+      root.position.y = baseY + Math.abs(Math.sin(phase * 2.1)) * 0.06
+      root.rotation.x = Math.sin(phase * 2) * 0.08
+      root.rotation.z = Math.sin(phase * 2.5) * 0.11
+      return
+    }
+
+    if (animationIntent === 'dance') {
+      root.position.y = baseY + Math.abs(Math.sin(phase * 2.8)) * 0.11
+      root.rotation.x = Math.sin(phase * 1.7) * 0.12
+      root.rotation.z = Math.sin(phase * 2.4) * 0.15
+      return
+    }
+
+    if (animationIntent === 'pose') {
+      root.position.y = baseY + 0.04 + Math.abs(Math.sin(phase * 1.2)) * 0.03
+      root.rotation.x = 0.16 + Math.sin(phase * 0.9) * 0.03
+      root.rotation.z = -0.06
+      return
+    }
+
+    root.position.y = baseY + Math.abs(Math.sin(phase * 1.3)) * 0.04
+    root.rotation.x = 0
+    root.rotation.z = Math.sin(phase * 0.9) * 0.05
+  })
+
+  useEffect(() => {
+    if (hasPlayableClipAnimation) return
+    currentAnimationNameRef.current = `procedural:${animationIntent}`
+    emitDebug()
+  }, [hasPlayableClipAnimation, animationIntent, emitDebug])
+
+  useEffect(() => {
     const faceSlotMesh = faceSlotMeshRef.current
     if (!faceSlotMesh) {
       faceImageLoadedRef.current = false
@@ -261,7 +399,7 @@ function AlienGlbCharacter({
     }
 
     if (faceTexture && !forceFallbackFace) {
-      createdTexture = cloneConfiguredTexture(faceTexture)
+      createdTexture = createOpaqueFaceTextureFromImage(faceTexture.image) || cloneConfiguredTexture(faceTexture)
       applyFaceTexture(createdTexture, true)
       return () => {
         disposed = true
@@ -272,14 +410,17 @@ function AlienGlbCharacter({
     }
 
     if (faceTextureUrl && !forceFallbackFace) {
-      const loader = new THREE.TextureLoader()
-      createdTexture = loader.load(
+      const imageLoader = new THREE.ImageLoader()
+      // Avoid a brief white flash while the face image texture is still loading.
+      applyFaceTexture(fallbackFaceTexture || null, false)
+      imageLoader.load(
         faceTextureUrl,
-        () => {
-          if (!createdTexture) return
-          createdTexture.colorSpace = THREE.SRGBColorSpace
-          createdTexture.flipY = false
-          createdTexture.needsUpdate = true
+        (image) => {
+          createdTexture = createOpaqueFaceTextureFromImage(image)
+          if (!createdTexture) {
+            applyFaceTexture(fallbackFaceTexture || null, false)
+            return
+          }
           applyFaceTexture(createdTexture, true)
         },
         undefined,
@@ -303,23 +444,28 @@ function AlienGlbCharacter({
   }, [faceTexture, faceTextureUrl, forceFallbackFace, fallbackFaceTexture, emitDebug])
 
   useEffect(() => {
-    if (!actions) return
-    Object.values(actions).forEach((action) => {
+    if (!actions || !hasPlayableClipAnimation) return
+    collectDefinedActions(actions).forEach((action) => {
       action.enabled = true
       action.setEffectiveWeight(1)
       action.setEffectiveTimeScale(Math.max(0.1, animationSpeed))
     })
-  }, [actions, animationSpeed])
+  }, [actions, animationSpeed, hasPlayableClipAnimation])
 
   useEffect(() => {
-    if (!actions) return undefined
+    if (!actions || !hasPlayableClipAnimation) return undefined
 
-    const allActions = Object.values(actions)
+    const allActions = collectDefinedActions(actions)
     if (allActions.length === 0) return undefined
-    const nextAction = actions[targetClipName] || allActions[0]
+    const preferredAction = actions[targetClipName]
+    const nextAction = isAnimationAction(preferredAction) ? preferredAction : allActions[0]
     if (!nextAction) return undefined
 
-    if (activeActionRef.current && activeActionRef.current !== nextAction) {
+    if (
+      activeActionRef.current
+      && activeActionRef.current !== nextAction
+      && typeof activeActionRef.current.fadeOut === 'function'
+    ) {
       activeActionRef.current.fadeOut(0.2)
     }
 
@@ -331,13 +477,13 @@ function AlienGlbCharacter({
     emitDebug()
 
     return undefined
-  }, [actions, targetClipName, emitDebug])
+  }, [actions, targetClipName, emitDebug, hasPlayableClipAnimation])
 
   useEffect(() => {
     return () => {
       if (!actions) return
-      Object.values(actions).forEach((action) => {
-        action.stop()
+      collectDefinedActions(actions).forEach((action) => {
+        action?.stop?.()
       })
     }
   }, [actions])
@@ -365,5 +511,10 @@ function AlienGlbCharacter({
     </group>
   )
 }
+
+useGLTF.preload(CHARACTER_GLB_URL)
+Object.values(ANIMATED_CHARACTER_GLB_URLS).forEach((url) => {
+  useGLTF.preload(url)
+})
 
 export default AlienGlbCharacter
