@@ -7,6 +7,7 @@ import { DEFAULT_ALIEN_FACE_CALIBRATION } from '../../lib/alienFaceCalibration'
 import { ANIMATED_CHARACTER_GLB_URLS, CHARACTER_GLB_URL } from '../main/alienGlbConfig'
 import { applyVariantToBodyMaterial, createAvatarBodyMaterial, findHeadJointIndices } from './bodyMaterial'
 import { resolveCharacterVariant } from './characterVariants'
+import { BEATS_PER_SECOND, DANCE_LAYERS } from './danceMoves'
 import { createProceduralBodyMaterial, getProceduralBodyGeometry, setProceduralBodySkin } from './proceduralBodies'
 import SelfieHead from './SelfieHead.jsx'
 import { useSelfieFace } from './useSelfieFace'
@@ -20,12 +21,13 @@ const HEAD_WOBBLE = { idle: 0.05, wave: 0.07, dance: 0.16, pose: 0.13 }
 const HEAD_WOBBLE_SPEED = 5.2
 // Neck pivot below the head centre, in head units.
 const HEAD_PIVOT_DROP = 0.95
+const AXIS = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) }
+const scratchQuaternion = new THREE.Quaternion()
 const MODEL_BASE_SCALE = 2.05
 // Where the selfie head sits on the body, in model space at rest pose (metres).
 const HEAD_ANCHOR = new THREE.Vector3(0, 1.3, 0.04)
 const HEAD_BASE_SIZE = 0.3
 const STATIC_CLIP_DURATION_EPSILON = 0.05
-
 const DEFAULT_HEAD_CALIBRATION = DEFAULT_ALIEN_FACE_CALIBRATION.head
 
 function resolveAnimationIntent(paradeAnimation) {
@@ -92,10 +94,23 @@ function buildAvatarRig(sourceScene) {
   scene.updateMatrixWorld(true)
   const joints = {}
   const boneIndexByName = {}
+  const bones = {}
+  const parentRestInverse = {}
   bodyMesh?.skeleton?.bones.forEach((bone, index) => {
     joints[bone.name] = bone.getWorldPosition(new THREE.Vector3())
     boneIndexByName[bone.name] = index
+    bones[bone.name] = bone
+    parentRestInverse[bone.name] = bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert()
   })
+  // Model-space axis expressed in a bone's parent space (rest pose), cached.
+  const axisCache = {}
+  const localAxis = (boneName, axisName) => {
+    const key = `${boneName}:${axisName}`
+    if (!axisCache[key] && parentRestInverse[boneName]) {
+      axisCache[key] = AXIS[axisName].clone().applyQuaternion(parentRestInverse[boneName])
+    }
+    return axisCache[key]
+  }
 
   let headAnchor = null
   if (headBone && headJointIndices) {
@@ -118,9 +133,23 @@ function buildAvatarRig(sourceScene) {
     bodyMesh,
     joints,
     boneIndexByName,
+    bones,
+    localAxis,
     dispose() {
       bodyMaterials.forEach((material) => material.dispose())
     },
+  }
+}
+
+function applyDanceLayers(rig, layerNames, beat) {
+  for (const name of layerNames) {
+    const turns = DANCE_LAYERS[name]?.(beat) || []
+    for (const [boneName, axisName, angle] of turns) {
+      const bone = rig.bones[boneName]
+      const axis = rig.localAxis(boneName, axisName)
+      if (!bone || !axis || !angle) continue
+      bone.quaternion.premultiply(scratchQuaternion.setFromAxisAngle(axis, angle))
+    }
   }
 }
 
@@ -165,6 +194,8 @@ function AvatarCharacter({
   headCalibration = DEFAULT_HEAD_CALIBRATION,
   // Changing this restarts the current move from frame 0 (synchronised group dances).
   syncKey = 0,
+  // Extra code-driven moves layered on the clip (keys of DANCE_LAYERS).
+  danceLayers = null,
   onDebugInfoChange,
 }) {
   const groupRef = useRef(null)
@@ -229,9 +260,11 @@ function AvatarCharacter({
     })
   }, [onDebugInfoChange, baseGltf, rig, face.isPhoto, variant, clips, hasClipAnimation, animationIntent, actions])
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     motionPhaseRef.current += delta
     const t = motionPhaseRef.current
+    // Runs after the animation mixer (registered later), so layers add to this frame's pose.
+    if (danceLayers?.length) applyDanceLayers(rig, danceLayers, state.clock.elapsedTime * BEATS_PER_SECOND)
     // Bobblehead wobble on the neck pivot.
     const wobble = wobbleRef.current
     if (wobble) {

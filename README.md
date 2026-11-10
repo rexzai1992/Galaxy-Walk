@@ -55,6 +55,13 @@ npm --prefix apps/electron run dev
   `?danceBreakEvery=15` to trigger the group "Dance Break" every 15 s while testing (default: every 35–55 s)
 - `/admin` – character lineup: all four characters wearing the latest selfie
 
+## Parade wall
+
+The wall shows a procedural galaxy (stars, nebula, planets, shooting stars) and a low-poly moon ridge the
+characters walk on, generated in code, no video files needed. Switch back to the video playlist in
+calibration (Background: Videos). Each character dances its own random dance (`components/avatar/danceMoves.js`),
+and every 35–55 s a "Dance Break" stops the whole parade for a moment.
+
 ## 3D characters
 
 All four characters share one rigged Meshy skeleton and its animations (idle/wave/dance/pose). The Alien is

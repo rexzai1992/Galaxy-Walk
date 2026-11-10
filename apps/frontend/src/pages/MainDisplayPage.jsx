@@ -7,7 +7,9 @@ import { useLocation } from 'react-router-dom'
 import AvatarCharacter from '../components/avatar/AvatarCharacter.jsx'
 import AvatarLighting from '../components/avatar/AvatarLighting.jsx'
 import GroundShadow from '../components/avatar/GroundShadow.jsx'
+import { MoonRidge, SpaceSky } from '../components/main/GalaxyBackdrop.jsx'
 import { CHARACTER_VARIANTS, resolveCharacterVariant } from '../components/avatar/characterVariants'
+import { BEATS_PER_SECOND, pickDance, pickDanceForSeed } from '../components/avatar/danceMoves'
 import { ANIMATED_CHARACTER_GLB_URLS, CHARACTER_GLB_URL } from '../components/main/alienGlbConfig'
 import {
   ALIEN_FACE_CALIBRATION_STORAGE_KEY,
@@ -34,11 +36,12 @@ const SCREEN_EDGE_MARGIN = 4
 const DEFAULT_PARADE_BOUNDS = { startX: 22, exitX: -22 }
 // Height of the name tag above the feet, in character model units.
 const NAME_TAG_HEIGHT = 4.25
-// Dance party: every character keeps switching moves at random, throws in
-// spins/hops/wiggles, and the whole parade bobs on one shared beat. Every
-// 35-55 s a synchronised "Dance Break" stops everyone for a group dance.
-const CONVEYOR_ANIMATIONS = ['dance', 'dance', 'pose', 'pose', 'wave', 'idle']
-const MOVE_SECONDS = [3, 6]
+// Dance party: every character has its own random dance (see danceMoves.js)
+// and tempo, switches dances now and then, throws in spins/hops/wiggles, and
+// the whole parade bobs on one shared beat. Every 35-55 s a "Dance Break" stops
+// everyone at once; each character then busts out its own random dance.
+const MOVE_SECONDS = [4, 8]
+const DANCE_TEMPO = [0.85, 1.25]
 const FLOURISH_SECONDS = [4, 9]
 const FLOURISHES = [
   { type: 'spin', duration: 0.9 },
@@ -46,11 +49,9 @@ const FLOURISHES = [
   { type: 'wiggle', duration: 1.1 },
   { type: 'spin', duration: 0.9 },
 ]
-const BEATS_PER_SECOND = 2
 const BEAT_BOB_HEIGHT = 0.07
 const DANCE_BREAK_EVERY_SECONDS = [35, 55]
 const DANCE_BREAK_SECONDS = 7.5
-const DANCE_BREAK_MOVES = ['dance', 'pose']
 const DANCE_BREAK_MIN_CHARACTERS = 2
 const FACE_DEBUG_DEFAULT = {
   modelLoaded: false,
@@ -70,6 +71,10 @@ const CALIBRATION_CHARACTER_OPTIONS = Object.values(CHARACTER_VARIANTS).map((var
   value: variant.id,
   label: variant.label,
 }))
+const CALIBRATION_BACKGROUND_OPTIONS = [
+  { value: 'galaxy', label: 'Galaxy' },
+  { value: 'video', label: 'Videos' },
+]
 const CALIBRATION_TRANSFORM_MODE_OPTIONS = [
   { value: 'translate', label: 'Move' },
   { value: 'rotate', label: 'Rotate' },
@@ -303,11 +308,6 @@ function pickRandom(list) {
   return list[Math.floor(Math.random() * list.length)]
 }
 
-function pickConveyorAnimation(previous) {
-  // Avoid repeating the same move back to back.
-  const options = CONVEYOR_ANIMATIONS.filter((move) => move !== previous)
-  return pickRandom(options.length > 0 ? options : CONVEYOR_ANIMATIONS)
-}
 
 function createCheckerFaceTexture() {
   const size = 512
@@ -395,7 +395,8 @@ function createQueuedPlayerEntity(payload, laneIndex, laneBackOffset, globalBack
     laneZ: lane.z,
     spawnX: startX + laneBackOffset * LANE_SPAWN_GAP + globalBackOffset * GLOBAL_SPAWN_GAP,
     speed: lane.speed,
-    paradeAnimation: pickConveyorAnimation(),
+    dance: pickDance(),
+    danceTempo: randomBetween(DANCE_TEMPO),
   }
 }
 
@@ -498,7 +499,7 @@ function MovingParadeCharacter({
   const flourishRef = useRef(null)
   const clockRef = useRef(0)
   const wasOnBreakRef = useRef(false)
-  const [move, setMove] = useState(player.paradeAnimation)
+  const [dance, setDance] = useState(player.dance)
   const ticketLabel = formatTicket(player.ticketNumber)
   const scale = PARADE_CHARACTER_SCALE * paradeScale
   const isOnBreak = Boolean(danceBreak)
@@ -510,7 +511,7 @@ function MovingParadeCharacter({
     let flourishTimer = null
     const scheduleMove = () => {
       moveTimer = window.setTimeout(() => {
-        setMove((previous) => pickConveyorAnimation(previous))
+        setDance((previous) => pickDance(previous?.id))
         scheduleMove()
       }, randomBetween(MOVE_SECONDS) * 1000)
     }
@@ -528,7 +529,14 @@ function MovingParadeCharacter({
     }
   }, [isOnBreak])
 
-  // Everyone hops into the dance break and spins out of it.
+  // During a dance break each character busts out its own random dance.
+  const breakDance = useMemo(
+    () => (danceBreak ? pickDanceForSeed(`${player.playerId}:${danceBreak.id}`) : null),
+    [danceBreak, player.playerId],
+  )
+  const activeDance = breakDance || dance
+
+  // Everyone hops into the dance break together and spins out of it.
   useEffect(() => {
     if (isOnBreak) flourishRef.current = { type: 'hop', duration: 0.7, start: clockRef.current }
     else if (wasOnBreakRef.current) flourishRef.current = { type: 'spin', duration: 0.9, start: clockRef.current }
@@ -592,12 +600,9 @@ function MovingParadeCharacter({
           <Suspense fallback={null}>
             <AvatarCharacter
               characterType={player.characterType}
-              paradeAnimation={danceBreak ? danceBreak.move : move}
-              // Same speed for everyone during a break keeps the group dance in sync.
-              animationSpeed={danceBreak
-                ? animationSpeedMultiplier
-                : Math.max(0.65, player.speed * 0.4 * animationSpeedMultiplier)}
-              syncKey={danceBreak ? danceBreak.id : 0}
+              paradeAnimation={activeDance.clip}
+              danceLayers={activeDance.layers}
+              animationSpeed={player.danceTempo * animationSpeedMultiplier}
               faceTextureUrl={player.faceTextureUrl}
               modelScale={modelScale}
               headCalibration={headCalibration}
@@ -633,6 +638,7 @@ function MainMoonScene({
     <>
       <ParadeCamera />
       <AvatarLighting />
+      {settings.backgroundMode === 'galaxy' ? <SpaceSky /> : null}
       <ParadeBoundsTracker
         boundsRef={boundsRef}
         paradeRouteOffset={paradeRouteOffset}
@@ -649,6 +655,7 @@ function MainMoonScene({
           MathUtils.degToRad(paradeRouteRotation.z),
         ]}
       >
+        {settings.backgroundMode === 'galaxy' ? <MoonRidge /> : null}
         {activePlayers.map((player) => (
           <MovingParadeCharacter
             key={player.playerId}
@@ -854,11 +861,14 @@ function CalibrationPreviewScene({
   ...previewProps
 }) {
   const { paradeRouteOffset, paradeRouteRotation } = previewProps.settings
+  const isGalaxy = previewProps.settings.backgroundMode === 'galaxy'
+  const ground = isGalaxy ? <MoonRidge /> : <CalibrationShadowRail />
 
   return (
     <>
       <ParadeCamera />
       <AvatarLighting />
+      {isGalaxy ? <SpaceSky /> : null}
 
       {transformTarget === 'route' ? (
         <Suspense fallback={null}>
@@ -868,7 +878,7 @@ function CalibrationPreviewScene({
             transformMode={transformMode}
             onTransformChange={onRouteTransformChange}
           >
-            <CalibrationShadowRail />
+            {ground}
             <CalibrationPreviewCharacter {...previewProps} />
           </CalibrationPreviewRouteManipulator>
         </Suspense>
@@ -881,7 +891,7 @@ function CalibrationPreviewScene({
             MathUtils.degToRad(paradeRouteRotation.z),
           ]}
         >
-          <CalibrationShadowRail />
+          {ground}
           <Suspense fallback={null}>
             <CalibrationPreviewCharacterManipulator
               transformMode={transformMode}
@@ -1217,7 +1227,7 @@ function MainDisplayPage() {
           scheduleBreak()
           return
         }
-        setDanceBreak({ id: Date.now(), move: pickRandom(DANCE_BREAK_MOVES) })
+        setDanceBreak({ id: Date.now() })
         endTimer = window.setTimeout(() => {
           setDanceBreak(null)
           scheduleBreak()
@@ -1448,7 +1458,7 @@ function MainDisplayPage() {
 
   return (
     <main className="main-display-page">
-      <MainDisplayBackgroundVideo />
+      {settings.backgroundMode === 'video' ? <MainDisplayBackgroundVideo /> : null}
       <div className="main-display-canvas-wrap">
         <Canvas
           dpr={[1, 1.5]}
@@ -1607,6 +1617,12 @@ function MainDisplayPage() {
             step={0.05}
             value={settings.animationSpeedMultiplier}
             onChange={(value) => updateTopLevelField('animationSpeedMultiplier', value)}
+          />
+          <CalibrationSelect
+            label="Background"
+            value={settings.backgroundMode}
+            options={CALIBRATION_BACKGROUND_OPTIONS}
+            onChange={(value) => updateTopLevelField('backgroundMode', value)}
           />
           <label className="face-calibration-row face-calibration-toggle">
             <span>Ticket Tags</span>

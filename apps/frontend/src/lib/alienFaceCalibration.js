@@ -5,6 +5,8 @@ export const DEFAULT_ALIEN_FACE_CALIBRATION = {
   paradeScale: 1,
   animationSpeedMultiplier: 1,
   showNameTags: true,
+  // 'galaxy' = procedural 3D space scene; 'video' = backgrounds/videos/playlist.json
+  backgroundMode: 'galaxy',
   characterOffset: {
     x: 0,
     y: 0,
@@ -87,6 +89,7 @@ export function normalizeAlienFaceCalibration(input) {
     paradeScale: clamp(rawParadeScale, 0.6, 2.2),
     animationSpeedMultiplier: clamp(rawAnimationSpeedMultiplier, 0.5, 2.5),
     showNameTags: source.showNameTags === undefined ? DEFAULT_ALIEN_FACE_CALIBRATION.showNameTags : Boolean(source.showNameTags),
+    backgroundMode: source.backgroundMode === 'video' ? 'video' : 'galaxy',
     characterOffset: normalizeTransformVector(
       source.characterOffset,
       DEFAULT_ALIEN_FACE_CALIBRATION.characterOffset,
