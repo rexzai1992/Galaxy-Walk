@@ -57,9 +57,11 @@ npm --prefix apps/electron run dev
 
 ## Parade wall
 
-The wall shows a procedural galaxy (stars, nebula, planets, shooting stars) and a low-poly moon ridge the
-characters walk on, generated in code, no video files needed. Switch back to the video playlist in
-calibration (Background: Videos). Each character dances its own random dance (`components/avatar/danceMoves.js`),
+The wall rotates through four procedural worlds: The Moon, Mars, Crystal Planet and Neon Jungle (galaxy sky,
+planets, shooting stars and a low-poly ground with props), all generated in code with no video files.
+The world changes every 2 minutes with a "Next stop" banner (calibration: Change; `?worldEvery=20` seconds for
+testing). Add or edit worlds in `apps/frontend/src/components/main/worlds.js`. Switch back to the video
+playlist in calibration (Background: Videos). Each character dances its own random dance (`components/avatar/danceMoves.js`),
 and every 35–55 s a "Dance Break" stops the whole parade for a moment.
 
 ## 3D characters

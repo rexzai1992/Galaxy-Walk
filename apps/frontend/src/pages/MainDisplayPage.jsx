@@ -7,7 +7,8 @@ import { useLocation } from 'react-router-dom'
 import AvatarCharacter from '../components/avatar/AvatarCharacter.jsx'
 import AvatarLighting from '../components/avatar/AvatarLighting.jsx'
 import GroundShadow from '../components/avatar/GroundShadow.jsx'
-import { MoonRidge, SpaceSky } from '../components/main/GalaxyBackdrop.jsx'
+import { SpaceSky, WorldGround } from '../components/main/GalaxyBackdrop.jsx'
+import { WORLDS, getWorld } from '../components/main/worlds'
 import { CHARACTER_VARIANTS, resolveCharacterVariant } from '../components/avatar/characterVariants'
 import { BEATS_PER_SECOND, pickDance, pickDanceForSeed } from '../components/avatar/danceMoves'
 import { ANIMATED_CHARACTER_GLB_URLS, CHARACTER_GLB_URL } from '../components/main/alienGlbConfig'
@@ -25,14 +26,15 @@ import { SOCKET_SERVER_URL } from '../lib/socket'
 // (roughly one per 7 units of parade width) so the queue keeps moving.
 const MIN_ACTIVE_CHARACTERS = 10
 const MAX_ACTIVE_CHARACTERS = 20
-const PARADE_UNITS_PER_CHARACTER = 7
+const PARADE_UNITS_PER_CHARACTER = 9
 const MAX_PENDING_QUEUE_PLAYERS = 200
-const LANE_SPAWN_GAP = 2.4
-const GLOBAL_SPAWN_GAP = 1.8
+const LANE_SPAWN_GAP = 3.6
+const GLOBAL_SPAWN_GAP = 2.7
 const SPAWN_INTERVAL_MS = 3000
-const PARADE_CHARACTER_SCALE = 1.2
+// Base character size on the wall (calibration Parade Size multiplies this).
+const PARADE_CHARACTER_SCALE = 1.8
 // How far past the visible screen edge characters spawn / despawn (route units).
-const SCREEN_EDGE_MARGIN = 4
+const SCREEN_EDGE_MARGIN = 5
 const DEFAULT_PARADE_BOUNDS = { startX: 22, exitX: -22 }
 // Height of the name tag above the feet, in character model units.
 const NAME_TAG_HEIGHT = 4.25
@@ -75,6 +77,14 @@ const CALIBRATION_BACKGROUND_OPTIONS = [
   { value: 'galaxy', label: 'Galaxy' },
   { value: 'video', label: 'Videos' },
 ]
+const CALIBRATION_WORLD_OPTIONS = WORLDS.map((world, index) => ({ value: String(index), label: world.name }))
+const CALIBRATION_WORLD_MINUTE_OPTIONS = [0.5, 1, 2, 3, 5, 10].map((minutes) => ({
+  value: String(minutes),
+  label: minutes < 1 ? '30 sec' : `${minutes} min`,
+}))
+// World change: fade out, swap at the darkest point, fade back in.
+const WORLD_FADE_MS = 1400
+const WORLD_BANNER_MS = 4500
 const CALIBRATION_TRANSFORM_MODE_OPTIONS = [
   { value: 'translate', label: 'Move' },
   { value: 'rotate', label: 'Rotate' },
@@ -628,6 +638,7 @@ function MainMoonScene({
   activePlayers,
   onPlayerExit,
   danceBreak,
+  world,
   boundsRef,
   onBoundsChange,
   settings,
@@ -638,7 +649,7 @@ function MainMoonScene({
     <>
       <ParadeCamera />
       <AvatarLighting />
-      {settings.backgroundMode === 'galaxy' ? <SpaceSky /> : null}
+      {settings.backgroundMode === 'galaxy' ? <SpaceSky world={world} /> : null}
       <ParadeBoundsTracker
         boundsRef={boundsRef}
         paradeRouteOffset={paradeRouteOffset}
@@ -655,7 +666,7 @@ function MainMoonScene({
           MathUtils.degToRad(paradeRouteRotation.z),
         ]}
       >
-        {settings.backgroundMode === 'galaxy' ? <MoonRidge /> : null}
+        {settings.backgroundMode === 'galaxy' ? <WorldGround world={world} /> : null}
         {activePlayers.map((player) => (
           <MovingParadeCharacter
             key={player.playerId}
@@ -695,9 +706,13 @@ function CalibrationPreviewCharacter({
         MathUtils.degToRad(characterRotation.z),
       ]}
     >
-      <group scale={[paradeScale, paradeScale, paradeScale]}>
+      {/* Same lane and size as a real parade character, so calibration matches the wall. */}
+      <group
+        position={[0, PARADE_LANES[2].y, PARADE_LANES[2].z]}
+        scale={[PARADE_CHARACTER_SCALE * paradeScale, PARADE_CHARACTER_SCALE * paradeScale, PARADE_CHARACTER_SCALE * paradeScale]}
+      >
         <AvatarCharacter
-          position={[0, -0.4, 1.0]}
+          position={[0, 0, 0]}
           characterType={characterType}
           paradeAnimation={previewAnimation}
           animationSpeed={settings.animationSpeedMultiplier}
@@ -854,6 +869,7 @@ function CalibrationPreviewRouteManipulator({
 }
 
 function CalibrationPreviewScene({
+  world,
   transformMode,
   transformTarget,
   onCharacterTransformChange,
@@ -862,13 +878,13 @@ function CalibrationPreviewScene({
 }) {
   const { paradeRouteOffset, paradeRouteRotation } = previewProps.settings
   const isGalaxy = previewProps.settings.backgroundMode === 'galaxy'
-  const ground = isGalaxy ? <MoonRidge /> : <CalibrationShadowRail />
+  const ground = isGalaxy ? <WorldGround world={world} /> : <CalibrationShadowRail />
 
   return (
     <>
       <ParadeCamera />
       <AvatarLighting />
-      {isGalaxy ? <SpaceSky /> : null}
+      {isGalaxy ? <SpaceSky world={world} /> : null}
 
       {transformTarget === 'route' ? (
         <Suspense fallback={null}>
@@ -960,6 +976,12 @@ function MainDisplayPage() {
   const [socketId, setSocketId] = useState('')
   const [lastQueuedPlayer, setLastQueuedPlayer] = useState(null)
   const [danceBreak, setDanceBreak] = useState(null)
+  const danceBreakRef = useRef(null)
+  const [worldIndex, setWorldIndex] = useState(0)
+  const worldIndexRef = useRef(0)
+  const [isWorldFading, setIsWorldFading] = useState(false)
+  const [worldBanner, setWorldBanner] = useState(null)
+  const [previewWorldIndex, setPreviewWorldIndex] = useState('0')
   const [isAlienGlbReady, setIsAlienGlbReady] = useState(false)
   const [paradeEdgeX, setParadeEdgeX] = useState(DEFAULT_PARADE_BOUNDS.startX)
   const [isDebugVisible, setIsDebugVisible] = useState(() => searchParams.get('debug') === '1')
@@ -1242,6 +1264,41 @@ function MainDisplayPage() {
     }
   }, [isCharacterCalibrationMode, searchParams])
 
+  useEffect(() => {
+    danceBreakRef.current = danceBreak
+  }, [danceBreak])
+
+  // Rotate through the worlds (never during a dance break). ?worldEvery=<seconds> for testing.
+  const worldMinutes = Number(faceCalibration?.worldMinutes) || DEFAULT_ALIEN_FACE_CALIBRATION.worldMinutes
+  const isGalaxyMode = (faceCalibration?.backgroundMode || 'galaxy') === 'galaxy'
+  useEffect(() => {
+    if (isCharacterCalibrationMode || !isGalaxyMode) return undefined
+    const fixedEvery = Number(searchParams.get('worldEvery'))
+    const everyMs = (fixedEvery > 0 ? fixedEvery : worldMinutes * 60) * 1000
+    const timers = []
+    const later = (fn, ms) => timers.push(window.setTimeout(fn, ms))
+
+    const scheduleSwitch = (delay) => later(() => {
+      if (danceBreakRef.current) {
+        scheduleSwitch(4000)
+        return
+      }
+      setIsWorldFading(true)
+      later(() => {
+        const next = (worldIndexRef.current + 1) % WORLDS.length
+        worldIndexRef.current = next
+        setWorldIndex(next)
+        setWorldBanner({ id: Date.now(), name: getWorld(next).name })
+      }, WORLD_FADE_MS / 2)
+      later(() => setIsWorldFading(false), WORLD_FADE_MS)
+      later(() => setWorldBanner(null), WORLD_FADE_MS / 2 + WORLD_BANNER_MS)
+      scheduleSwitch(everyMs)
+    }, delay)
+
+    scheduleSwitch(everyMs)
+    return () => timers.forEach((id) => window.clearTimeout(id))
+  }, [isCharacterCalibrationMode, isGalaxyMode, searchParams, worldMinutes])
+
   const statusText = useMemo(() => {
     if (isCharacterCalibrationMode) return 'Calibration'
     if (connectionState === 'connected') return 'Connected'
@@ -1467,6 +1524,7 @@ function MainDisplayPage() {
         >
           {isCharacterCalibrationMode ? (
             <CalibrationPreviewScene
+              world={getWorld(Number(previewWorldIndex))}
               characterType={previewCharacterType}
               faceTextureUrl={faceSlotTexture ? '' : effectiveFaceTextureUrl}
               faceTexture={faceSlotTexture}
@@ -1482,6 +1540,7 @@ function MainDisplayPage() {
             <MainMoonScene
               activePlayers={activePlayers}
               danceBreak={danceBreak}
+              world={getWorld(worldIndex)}
               onPlayerExit={handlePlayerExit}
               boundsRef={paradeBoundsRef}
               onBoundsChange={handleParadeBoundsChange}
@@ -1522,6 +1581,14 @@ function MainDisplayPage() {
           </div>
         ) : null}
       </div>
+
+      <div className={`world-fade ${isWorldFading ? 'is-active' : ''}`} aria-hidden="true"></div>
+      {worldBanner ? (
+        <div className="world-banner" key={worldBanner.id} aria-live="polite">
+          <span className="world-banner-label">Next stop</span>
+          <span className="world-banner-name">{worldBanner.name}</span>
+        </div>
+      ) : null}
 
       {danceBreak ? (
         <div className="dance-break-banner" key={danceBreak.id} aria-live="polite">
@@ -1623,6 +1690,18 @@ function MainDisplayPage() {
             value={settings.backgroundMode}
             options={CALIBRATION_BACKGROUND_OPTIONS}
             onChange={(value) => updateTopLevelField('backgroundMode', value)}
+          />
+          <CalibrationSelect
+            label="World"
+            value={previewWorldIndex}
+            options={CALIBRATION_WORLD_OPTIONS}
+            onChange={setPreviewWorldIndex}
+          />
+          <CalibrationSelect
+            label="Change"
+            value={String(settings.worldMinutes)}
+            options={CALIBRATION_WORLD_MINUTE_OPTIONS}
+            onChange={(value) => updateTopLevelField('worldMinutes', Number(value))}
           />
           <label className="face-calibration-row face-calibration-toggle">
             <span>Ticket Tags</span>

@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 
-// Procedural space scene for the parade wall: galaxy sky, twinkling stars,
-// planets, shooting stars and a low-poly moon ridge the parade walks on.
-// Everything is generated at startup (no image/video files) and costs a
-// handful of draw calls.
+// Procedural space worlds for the parade wall (see worlds.js): galaxy sky,
+// twinkling stars, planets, shooting stars, and a low-poly ridge with props
+// that the parade walks on. Generated in code (no image/video files); each
+// world is built once, the first time it is shown, and only the current world
+// is drawn.
 
 const SKY_SIZE = [2048, 512]
 const LANE_Y = -0.27
@@ -37,23 +38,17 @@ function canvasTexture(canvas) {
 
 // ---------- Sky ----------
 
-function createSkyTexture() {
+function createSkyTexture(sky) {
   const [width, height] = SKY_SIZE
   const [canvas, ctx] = makeCanvas(width, height)
-  const rand = seededRandom(7)
-  ctx.fillStyle = '#05061a'
+  const rand = seededRandom(sky.seed)
+  ctx.fillStyle = sky.base
   ctx.fillRect(0, 0, width, height)
 
   // Milky-way band running diagonally across the sky.
   const bandY = (x) => height * (0.7 - 0.45 * (x / width))
-  const nebula = [
-    ['118, 74, 255', 0.11],
-    ['255, 79, 163', 0.07],
-    ['47, 214, 207', 0.06],
-    ['70, 110, 255', 0.1],
-  ]
   for (let i = 0; i < 90; i += 1) {
-    const [rgb, alpha] = nebula[i % nebula.length]
+    const [rgb, alpha] = sky.nebula[i % sky.nebula.length]
     const x = rand() * width
     const y = bandY(x) + (rand() - 0.5) * height * 0.55
     const radius = 50 + rand() * 230
@@ -140,10 +135,9 @@ function createTwinkleStars(count) {
 
 // ---------- Planets ----------
 
-function createGasGiantTexture() {
+function createGasGiantTexture(palette, seed) {
   const [canvas, ctx] = makeCanvas(512, 256)
-  const rand = seededRandom(23)
-  const palette = ['#ffb38a', '#ff7f8f', '#c784ff', '#ffd7ae', '#ff9f6b', '#a77bff']
+  const rand = seededRandom(seed)
   let y = 0
   while (y < 256) {
     const bandHeight = 6 + rand() * 26
@@ -151,14 +145,13 @@ function createGasGiantTexture() {
     ctx.fillRect(0, y, 512, bandHeight + 1)
     y += bandHeight
   }
-  // Soft swirls and a storm spot.
   for (let i = 0; i < 40; i += 1) {
     ctx.fillStyle = `rgba(255, 255, 255, ${0.04 + rand() * 0.06})`
     ctx.beginPath()
     ctx.ellipse(rand() * 512, rand() * 256, 20 + rand() * 60, 3 + rand() * 6, 0, 0, Math.PI * 2)
     ctx.fill()
   }
-  ctx.fillStyle = 'rgba(214, 72, 110, 0.85)'
+  ctx.fillStyle = 'rgba(120, 40, 80, 0.45)'
   ctx.beginPath()
   ctx.ellipse(340, 150, 28, 14, 0, 0, Math.PI * 2)
   ctx.fill()
@@ -191,13 +184,13 @@ function createEarthTexture() {
   return canvasTexture(canvas)
 }
 
-function createIceMoonTexture() {
+function createRockyTexture(color, seed) {
   const [canvas, ctx] = makeCanvas(256, 128)
-  const rand = seededRandom(43)
-  ctx.fillStyle = '#4fd8d0'
+  const rand = seededRandom(seed)
+  ctx.fillStyle = color
   ctx.fillRect(0, 0, 256, 128)
   for (let i = 0; i < 60; i += 1) {
-    ctx.fillStyle = `rgba(20, 90, 110, ${0.15 + rand() * 0.25})`
+    ctx.fillStyle = `rgba(0, 0, 0, ${0.08 + rand() * 0.18})`
     ctx.beginPath()
     ctx.arc(rand() * 256, rand() * 128, 2 + rand() * 9, 0, Math.PI * 2)
     ctx.fill()
@@ -205,10 +198,10 @@ function createIceMoonTexture() {
   return canvasTexture(canvas)
 }
 
-function createRingGeometry() {
+function createRingGeometry(palette, seed) {
   const geometry = new THREE.RingGeometry(1.45, 2.35, 96, 12)
-  const rand = seededRandom(57)
-  const bands = Array.from({ length: 13 }, () => new THREE.Color().setHSL(0.06 + rand() * 0.08, 0.6, 0.55 + rand() * 0.3))
+  const rand = seededRandom(seed)
+  const bands = Array.from({ length: 13 }, () => new THREE.Color(palette[Math.floor(rand() * palette.length)]).lerp(new THREE.Color('#ffffff'), rand() * 0.4))
   const colors = []
   const position = geometry.attributes.position
   for (let i = 0; i < position.count; i += 1) {
@@ -221,15 +214,18 @@ function createRingGeometry() {
   return geometry
 }
 
-// Placement in screen terms so planets stay framed on any screen shape:
-// ndc x/y (-1..1), size as a fraction of screen height, depth beyond the scene.
-const PLANETS = [
-  { id: 'giant', ndc: [-0.7, 0.64], size: 0.21, depth: 70, tilt: 0.35, spin: 0.05, ring: true },
-  { id: 'earth', ndc: [0.4, 0.8], size: 0.085, depth: 80, tilt: 0.4, spin: 0.08, atmosphere: '#7fc4ff' },
-  { id: 'ice', ndc: [0.88, 0.6], size: 0.045, depth: 75, tilt: 0.1, spin: 0.12, atmosphere: '#9ff7ef' },
-]
+function createPlanetAssets(planet, index) {
+  const seed = 23 + index * 13
+  const texture = planet.kind === 'gas'
+    ? createGasGiantTexture(planet.palette, seed)
+    : planet.kind === 'earth'
+      ? createEarthTexture()
+      : createRockyTexture(planet.color, seed)
+  const ring = planet.ring ? createRingGeometry(planet.palette, seed + 1) : null
+  return { texture, ring }
+}
 
-function Planet({ planet, texture, ringGeometry }) {
+function Planet({ planet, assets }) {
   const spinRef = useRef(null)
   useFrame((_, delta) => {
     if (spinRef.current) spinRef.current.rotation.y += delta * planet.spin
@@ -238,7 +234,7 @@ function Planet({ planet, texture, ringGeometry }) {
     <group rotation={[0, 0, planet.tilt]}>
       <mesh ref={spinRef}>
         <sphereGeometry args={[1, 40, 24]} />
-        <meshStandardMaterial map={texture} roughness={0.9} metalness={0} emissive="#ffffff" emissiveMap={texture} emissiveIntensity={0.18} />
+        <meshStandardMaterial map={assets.texture} roughness={0.9} metalness={0} emissive="#ffffff" emissiveMap={assets.texture} emissiveIntensity={0.18} />
       </mesh>
       {planet.atmosphere ? (
         <mesh scale={1.08}>
@@ -246,8 +242,8 @@ function Planet({ planet, texture, ringGeometry }) {
           <meshBasicMaterial color={planet.atmosphere} transparent opacity={0.22} side={THREE.BackSide} depthWrite={false} />
         </mesh>
       ) : null}
-      {planet.ring ? (
-        <mesh geometry={ringGeometry} rotation={[-1.25, 0.2, 0]}>
+      {assets.ring ? (
+        <mesh geometry={assets.ring} rotation={[-1.25, 0.2, 0]}>
           <meshBasicMaterial vertexColors transparent opacity={0.8} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
       ) : null}
@@ -266,8 +262,22 @@ function createShootingStarTexture() {
   return canvasTexture(canvas)
 }
 
+// ---------- World asset cache ----------
+
+const skyCache = new Map()
+
+function getSkyAssets(world) {
+  if (!skyCache.has(world.id)) {
+    skyCache.set(world.id, {
+      skyTexture: createSkyTexture(world.sky),
+      planets: world.planets.map((planet, index) => createPlanetAssets(planet, index)),
+    })
+  }
+  return skyCache.get(world.id)
+}
+
 // Per-frame placement of the camera-attached sky, planets and shooting star.
-function updateSpaceSky(state, camera, gl, refs, assets) {
+function updateSpaceSky(state, camera, gl, refs, assets, planets) {
   const { followRef, skyRef, planetRefs, shootingRef, shootingStateRef } = refs
   const { skyTexture, twinkle } = assets
   const follow = followRef.current
@@ -289,7 +299,7 @@ function updateSpaceSky(state, camera, gl, refs, assets) {
   twinkle.material.uniforms.uPixelRatio.value = gl.getPixelRatio()
 
   const sceneDistance = camera.position.length()
-  PLANETS.forEach((planet, index) => {
+  planets.forEach((planet, index) => {
     const node = planetRefs.current[index]
     if (!node) return
     const depth = sceneDistance + planet.depth
@@ -302,35 +312,33 @@ function updateSpaceSky(state, camera, gl, refs, assets) {
   const shooting = shootingRef.current
   const shot = shootingStateRef.current
   const t = state.clock.elapsedTime
-  if (shooting) {
-    if (t > shot.next) {
-      shot.start = t
-      shot.next = t + 5 + Math.random() * 7
-      shot.from.set(-0.2 + Math.random() * 1.1, 0.45 + Math.random() * 0.45)
-      shot.dir.set(-0.9 - Math.random() * 0.4, -0.35 - Math.random() * 0.25).normalize()
-    }
-    const progress = (t - shot.start) / 0.9
-    shooting.visible = progress >= 0 && progress <= 1
-    if (shooting.visible) {
-      const depth = sceneDistance + 85
-      const halfHeight = depth * tanHalf
-      const travel = progress * 0.9
-      shooting.position.set(
-        (shot.from.x + shot.dir.x * travel) * halfHeight * aspect,
-        (shot.from.y + shot.dir.y * travel * aspect * 0.4) * halfHeight,
-        -depth,
-      )
-      shooting.rotation.z = Math.atan2(shot.dir.y * aspect * 0.4, shot.dir.x * aspect) + Math.PI
-      shooting.scale.set(halfHeight * 0.55, halfHeight * 0.02, 1)
-      shooting.material.opacity = Math.sin(progress * Math.PI)
-    }
+  if (!shooting) return
+  if (t > shot.next) {
+    shot.start = t
+    shot.next = t + 5 + Math.random() * 7
+    shot.from.set(-0.2 + Math.random() * 1.1, 0.45 + Math.random() * 0.45)
+    shot.dir.set(-0.9 - Math.random() * 0.4, -0.35 - Math.random() * 0.25).normalize()
   }
+  const progress = (t - shot.start) / 0.9
+  shooting.visible = progress >= 0 && progress <= 1
+  if (!shooting.visible) return
+  const depth = sceneDistance + 85
+  const halfHeight = depth * tanHalf
+  const travel = progress * 0.9
+  shooting.position.set(
+    (shot.from.x + shot.dir.x * travel) * halfHeight * aspect,
+    (shot.from.y + shot.dir.y * travel * aspect * 0.4) * halfHeight,
+    -depth,
+  )
+  shooting.rotation.z = Math.atan2(shot.dir.y * aspect * 0.4, shot.dir.x * aspect) + Math.PI
+  shooting.scale.set(halfHeight * 0.55, halfHeight * 0.02, 1)
+  shooting.material.opacity = Math.sin(progress * Math.PI)
 }
 
 /**
- * Camera-attached sky: always fills the view, whatever the screen shape.
+ * Camera-attached sky for a world: always fills the view, whatever the screen shape.
  */
-export function SpaceSky() {
+export function SpaceSky({ world }) {
   const camera = useThree((state) => state.camera)
   const gl = useThree((state) => state.gl)
   const followRef = useRef(null)
@@ -339,43 +347,35 @@ export function SpaceSky() {
   const shootingRef = useRef(null)
   const shootingStateRef = useRef({ next: 3, start: -10, from: new THREE.Vector2(), dir: new THREE.Vector2() })
 
-  const skyTexture = useMemo(() => createSkyTexture(), [])
+  const worldAssets = useMemo(() => getSkyAssets(world), [world])
   const twinkle = useMemo(() => createTwinkleStars(320), [])
-  const planetTextures = useMemo(() => ({
-    giant: createGasGiantTexture(),
-    earth: createEarthTexture(),
-    ice: createIceMoonTexture(),
-  }), [])
-  const ringGeometry = useMemo(() => createRingGeometry(), [])
   const shootingTexture = useMemo(() => createShootingStarTexture(), [])
 
   useEffect(() => () => {
-    skyTexture.dispose()
     twinkle.geometry.dispose()
     twinkle.material.dispose()
-    Object.values(planetTextures).forEach((texture) => texture.dispose())
-    ringGeometry.dispose()
     shootingTexture.dispose()
-  }, [skyTexture, twinkle, planetTextures, ringGeometry, shootingTexture])
+  }, [twinkle, shootingTexture])
 
   useFrame((state) => updateSpaceSky(
     state,
     camera,
     gl,
     { followRef, skyRef, planetRefs, shootingRef, shootingStateRef },
-    { skyTexture, twinkle },
+    { skyTexture: worldAssets.skyTexture, twinkle },
+    world.planets,
   ))
 
   return (
     <group ref={followRef}>
       <mesh ref={skyRef} renderOrder={-10}>
         <planeGeometry args={[1, 1]} />
-        <meshBasicMaterial map={skyTexture} depthWrite={false} toneMapped={false} />
+        <meshBasicMaterial map={worldAssets.skyTexture} depthWrite={false} toneMapped={false} />
         <points geometry={twinkle.geometry} material={twinkle.material} renderOrder={-9} />
       </mesh>
-      {PLANETS.map((planet, index) => (
-        <group key={planet.id} ref={(node) => { planetRefs.current[index] = node }}>
-          <Planet planet={planet} texture={planetTextures[planet.id]} ringGeometry={ringGeometry} />
+      {world.planets.map((planet, index) => (
+        <group key={`${world.id}-${index}`} ref={(node) => { planetRefs.current[index] = node }}>
+          <Planet planet={planet} assets={worldAssets.planets[index]} />
         </group>
       ))}
       <mesh ref={shootingRef} visible={false}>
@@ -386,7 +386,7 @@ export function SpaceSky() {
   )
 }
 
-// ---------- Moon ridge (the ground the parade walks on) ----------
+// ---------- Ground ridge (the surface the parade walks on) ----------
 
 function ridgeProfile(z) {
   const dz = z - LANE_CENTER_Z
@@ -395,14 +395,14 @@ function ridgeProfile(z) {
   return dz < 0 ? -0.034 * dz * dz : -0.0035 * dz * dz
 }
 
-function createRidge() {
-  const rand = seededRandom(97)
+function createRidge(ground) {
+  const rand = seededRandom(ground.seed)
   const geometry = new THREE.PlaneGeometry(440, 110, 220, 55)
   geometry.rotateX(-Math.PI / 2)
   geometry.translate(0, 0, 5)
 
   const craters = []
-  while (craters.length < 420) {
+  while (craters.length < ground.craters) {
     // Denser near the middle of the screen and in front, where they are seen up close.
     const x = (rand() - 0.5) * (rand() < 0.5 ? 120 : 420)
     const z = -28 + rand() * 80
@@ -412,14 +412,17 @@ function createRidge() {
 
   const position = geometry.attributes.position
   const colors = new Float32Array(position.count * 3)
-  const base = new THREE.Color('#71768f')
-  const dark = new THREE.Color('#3f4259')
-  const light = new THREE.Color('#aeb2c8')
+  const base = new THREE.Color(ground.base)
+  const dark = new THREE.Color(ground.dark)
+  const light = new THREE.Color(ground.light)
   const color = new THREE.Color()
 
   const heightAt = (x, z, jitter) => {
     const offWalkway = THREE.MathUtils.smoothstep(Math.abs(z - LANE_CENTER_Z), WALKWAY_HALF_WIDTH, WALKWAY_HALF_WIDTH + 3)
-    let y = ridgeProfile(z) + jitter * 0.7 * offWalkway
+    let y = ridgeProfile(z) + jitter * ground.roughness * offWalkway
+    if (ground.dunes) {
+      y += (Math.sin(x * 0.09 + z * 0.05) * 0.6 + Math.sin(x * 0.031 - z * 0.08) * 0.8) * ground.dunes * offWalkway
+    }
     let craterShade = 0
     for (const crater of craters) {
       const d = Math.hypot(x - crater.x, z - crater.z)
@@ -449,52 +452,146 @@ function createRidge() {
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   geometry.computeVertexNormals()
 
-  // Low-poly boulders (one instanced draw call), kept off the walkway.
-  // Mostly just behind the walkway (framing the parade), a few small ones in
-  // front, none close to the camera.
-  const rocks = []
-  while (rocks.length < 56) {
-    const behind = rand() < 0.7
+  // Props: mostly right behind the walkway edge so they rise above the
+  // horizon and frame the parade, a few small ones in front, none close to
+  // the camera.
+  const props = []
+  const propColors = []
+  const walkwayBack = LANE_CENTER_Z - WALKWAY_HALF_WIDTH - 1.2
+  while (props.length < 64) {
+    const behind = rand() < 0.75
     const x = (rand() - 0.5) * 400
-    const z = behind ? -11 + rand() * 6 : 9 + rand() * 18
+    const z = behind ? walkwayBack - rand() * 2.5 : 9 + rand() * 18
     if (!behind && Math.abs(x) < 9) continue
-    const scale = behind ? 0.4 + rand() * rand() * 1.6 : 0.25 + rand() * 0.6
-    rocks.push({
-      position: new THREE.Vector3(x, heightAt(x, z, 0).y + scale * 0.25, z),
-      scale: new THREE.Vector3(scale * (0.8 + rand() * 0.6), scale * (0.6 + rand() * 0.8), scale * (0.8 + rand() * 0.6)),
-      rotation: new THREE.Euler(rand() * Math.PI, rand() * Math.PI, rand() * Math.PI),
-    })
+    const size = behind ? 0.6 + rand() * rand() * 1.8 : 0.3 + rand() * 0.6
+    props.push({ x, z, size, groundY: heightAt(x, z, 0).y, spin: rand() * Math.PI * 2, lean: (rand() - 0.5) * 0.4, variety: rand() })
+    propColors.push(Math.floor(rand() * 1000))
   }
-  return { geometry, rocks }
+  return { geometry, props, propColors }
 }
 
-/** The lunar ground strip; place it inside the parade route group. */
-export function MoonRidge() {
-  const ridge = useMemo(() => createRidge(), [])
-  const rocksRef = useRef(null)
+// Instanced prop shapes per world type: [geometry factory, transform for one prop].
+const PROP_SHAPES = {
+  rocks: {
+    geometry: () => new THREE.IcosahedronGeometry(1, 0),
+    place: (p) => ({
+      position: [p.x, p.groundY + p.size * 0.25, p.z],
+      rotation: [p.spin, p.spin * 1.7, p.lean],
+      scale: [p.size * (0.8 + p.variety * 0.6), p.size * (0.6 + p.variety * 0.8), p.size * (1.2 - p.variety * 0.4)],
+    }),
+  },
+  mesas: {
+    geometry: () => new THREE.CylinderGeometry(0.75, 1, 1, 7).translate(0, 0.5, 0),
+    place: (p) => ({
+      position: [p.x, p.groundY - 0.1, p.z],
+      rotation: [0, p.spin, 0],
+      scale: [p.size * 1.3, p.size * (1.4 + p.variety * 2.6), p.size * 1.3],
+    }),
+  },
+  crystals: {
+    geometry: () => new THREE.ConeGeometry(0.5, 1, 6).translate(0, 0.5, 0),
+    place: (p) => ({
+      position: [p.x, p.groundY - 0.1, p.z],
+      rotation: [p.lean, p.spin, p.lean * 0.7],
+      scale: [p.size, p.size * (2.2 + p.variety * 3), p.size],
+    }),
+  },
+  mushrooms: {
+    // Cap (flattened half sphere) on a stem, merged into one shape.
+    geometry: () => {
+      const cap = new THREE.SphereGeometry(0.6, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.55, 1).translate(0, 0.9, 0)
+      const stem = new THREE.CylinderGeometry(0.14, 0.2, 0.9, 8).translate(0, 0.45, 0)
+      const merged = new THREE.BufferGeometry()
+      const parts = [cap.toNonIndexed(), stem.toNonIndexed()]
+      const total = parts.reduce((sum, part) => sum + part.attributes.position.count, 0)
+      const positions = new Float32Array(total * 3)
+      const normals = new Float32Array(total * 3)
+      let offset = 0
+      parts.forEach((part) => {
+        positions.set(part.attributes.position.array, offset * 3)
+        normals.set(part.attributes.normal.array, offset * 3)
+        offset += part.attributes.position.count
+      })
+      merged.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+      return merged
+    },
+    place: (p) => ({
+      position: [p.x, p.groundY - 0.05, p.z],
+      rotation: [p.lean * 0.5, p.spin, p.lean * 0.5],
+      scale: [p.size * 1.7, p.size * (1.6 + p.variety * 1.6), p.size * 1.7],
+    }),
+  },
+}
+
+// Standard material whose instance colours also glow (crystals, mushrooms).
+function createPropMaterial(glow) {
+  const material = new THREE.MeshStandardMaterial({ flatShading: true, roughness: glow > 0 ? 0.35 : 0.9, metalness: 0 })
+  if (glow > 0) {
+    material.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+#ifdef USE_COLOR
+  totalEmissiveRadiance += vColor.rgb * ${glow.toFixed(2)};
+#endif`,
+      )
+    }
+    material.customProgramCacheKey = () => `glow-prop-${glow}`
+  }
+  return material
+}
+
+const groundCache = new Map()
+
+function getGroundAssets(world) {
+  if (!groundCache.has(world.id)) {
+    const ridge = createRidge(world.ground)
+    const shape = PROP_SHAPES[world.props.type] || PROP_SHAPES.rocks
+    groundCache.set(world.id, {
+      ridge,
+      shape,
+      propGeometry: shape.geometry(),
+      propMaterial: createPropMaterial(world.props.glow || 0),
+      ridgeMaterial: new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95, metalness: 0 }),
+    })
+  }
+  return groundCache.get(world.id)
+}
+
+function fillPropInstances(mesh, assets, world) {
+  const matrix = new THREE.Matrix4()
+  const quaternion = new THREE.Quaternion()
+  const color = new THREE.Color()
+  assets.ridge.props.forEach((prop, index) => {
+    const placed = assets.shape.place(prop)
+    quaternion.setFromEuler(new THREE.Euler(...placed.rotation))
+    matrix.compose(new THREE.Vector3(...placed.position), quaternion, new THREE.Vector3(...placed.scale))
+    mesh.setMatrixAt(index, matrix)
+    const palette = world.props.colors
+    mesh.setColorAt(index, color.set(palette[assets.ridge.propColors[index] % palette.length]))
+  })
+  mesh.instanceMatrix.needsUpdate = true
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+}
+
+/** The ground strip and props for a world; place it inside the parade route group. */
+export function WorldGround({ world }) {
+  const assets = useMemo(() => getGroundAssets(world), [world])
+  const propsRef = useRef(null)
 
   useEffect(() => {
-    const mesh = rocksRef.current
-    if (!mesh) return
-    const matrix = new THREE.Matrix4()
-    ridge.rocks.forEach((rock, index) => {
-      matrix.compose(rock.position, new THREE.Quaternion().setFromEuler(rock.rotation), rock.scale)
-      mesh.setMatrixAt(index, matrix)
-    })
-    mesh.instanceMatrix.needsUpdate = true
-  }, [ridge])
-
-  useEffect(() => () => ridge.geometry.dispose(), [ridge])
+    if (propsRef.current) fillPropInstances(propsRef.current, assets, world)
+  }, [assets, world])
 
   return (
     <group>
-      <mesh geometry={ridge.geometry} renderOrder={-2}>
-        <meshStandardMaterial vertexColors flatShading roughness={0.95} metalness={0} />
-      </mesh>
-      <instancedMesh ref={rocksRef} args={[undefined, undefined, ridge.rocks.length]}>
-        <icosahedronGeometry args={[1, 0]} />
-        <meshStandardMaterial color="#7d8199" flatShading roughness={0.9} metalness={0} />
-      </instancedMesh>
+      <mesh geometry={assets.ridge.geometry} material={assets.ridgeMaterial} renderOrder={-2} />
+      <instancedMesh
+        key={world.id}
+        ref={propsRef}
+        args={[assets.propGeometry, assets.propMaterial, assets.ridge.props.length]}
+      />
     </group>
   )
 }

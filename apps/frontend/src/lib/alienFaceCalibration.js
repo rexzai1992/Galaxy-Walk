@@ -7,6 +7,8 @@ export const DEFAULT_ALIEN_FACE_CALIBRATION = {
   showNameTags: true,
   // 'galaxy' = procedural 3D space scene; 'video' = backgrounds/videos/playlist.json
   backgroundMode: 'galaxy',
+  // Galaxy mode rotates through the worlds in components/main/worlds.js.
+  worldMinutes: 2,
   characterOffset: {
     x: 0,
     y: 0,
@@ -90,6 +92,7 @@ export function normalizeAlienFaceCalibration(input) {
     animationSpeedMultiplier: clamp(rawAnimationSpeedMultiplier, 0.5, 2.5),
     showNameTags: source.showNameTags === undefined ? DEFAULT_ALIEN_FACE_CALIBRATION.showNameTags : Boolean(source.showNameTags),
     backgroundMode: source.backgroundMode === 'video' ? 'video' : 'galaxy',
+    worldMinutes: clamp(toFiniteNumber(source.worldMinutes, DEFAULT_ALIEN_FACE_CALIBRATION.worldMinutes), 0.5, 30),
     characterOffset: normalizeTransformVector(
       source.characterOffset,
       DEFAULT_ALIEN_FACE_CALIBRATION.characterOffset,
