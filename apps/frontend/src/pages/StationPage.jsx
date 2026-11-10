@@ -1,95 +1,156 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import StationAvatarPreview from '../components/station/StationAvatarPreview.jsx'
 import StationWebcamCapture from '../components/station/StationWebcamCapture.jsx'
+import { CHARACTER_VARIANTS, DEFAULT_CHARACTER_VARIANT } from '../components/avatar/characterVariants'
 import { socket, SOCKET_SERVER_URL } from '../lib/socket'
 
 const CHARACTER_OPTIONS = [
-  { id: 'astronaut', name: 'Astronaut', tag: 'Moon Ranger' },
-  { id: 'alien', name: 'Alien', tag: 'Galaxy Visitor' },
-  { id: 'human', name: 'Human', tag: 'Earth Explorer' },
-  { id: 'robot', name: 'Robot', tag: 'Neon Machine' },
-]
+  { id: 'alien', tag: 'Galaxy Visitor' },
+  { id: 'astronaut', tag: 'Moon Ranger' },
+  { id: 'human', tag: 'Earth Explorer' },
+  { id: 'robot', tag: 'Neon Machine' },
+].map((option) => ({ ...option, name: CHARACTER_VARIANTS[option.id].label }))
 
-function StationPage() {
-  const stationId = useMemo(() => {
-    const search = new URLSearchParams(window.location.search)
-    return search.get('stationId') || search.get('id') || 'station-01'
+const IDLE_RESET_MS = 60 * 1000
+const SUCCESS_RESET_SECONDS = 15
+const SUBMIT_TIMEOUT_MS = 7000
+
+function formatTicket(ticketNumber) {
+  const n = Number(ticketNumber || 0)
+  return n > 0 ? `#${String(n).padStart(3, '0')}` : ''
+}
+
+function submitPlayer(payload) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error('The parade server did not respond in time.'))
+    }, SUBMIT_TIMEOUT_MS)
+
+    socket.emit('player:submit', payload, (ack) => {
+      window.clearTimeout(timeoutId)
+      if (!ack?.ok) {
+        reject(new Error(ack?.message || 'Failed to join the parade.'))
+        return
+      }
+      resolve(ack)
+    })
+  })
+}
+
+function useSocketConnected() {
+  const [isConnected, setIsConnected] = useState(socket.connected)
+
+  useEffect(() => {
+    const handleConnect = () => setIsConnected(true)
+    const handleDisconnect = () => setIsConnected(false)
+    socket.on('connect', handleConnect)
+    socket.on('disconnect', handleDisconnect)
+    socket.on('connect_error', handleDisconnect)
+    if (!socket.connected) socket.connect()
+    return () => {
+      socket.off('connect', handleConnect)
+      socket.off('disconnect', handleDisconnect)
+      socket.off('connect_error', handleDisconnect)
+    }
   }, [])
 
+  return isConnected
+}
+
+function StepLabel({ step }) {
+  return <p className="station-eyebrow">Step {step} of 3</p>
+}
+
+function StationPage() {
+  const searchParams = useMemo(() => new URLSearchParams(window.location.search), [])
+  const stationId = searchParams.get('stationId') || searchParams.get('id') || 'station-01'
+  const showDebug = searchParams.get('debug') === '1'
+  const isServerConnected = useSocketConnected()
+
   const [screen, setScreen] = useState('welcome')
-  const [faceCropPngBase64, setFaceCropPngBase64] = useState('')
-  const [selectedCharacter, setSelectedCharacter] = useState('')
-  const [joinMessage, setJoinMessage] = useState('')
+  const [faceDataUrl, setFaceDataUrl] = useState('')
+  const [faceDetected, setFaceDetected] = useState(true)
+  const [selectedCharacter, setSelectedCharacter] = useState(DEFAULT_CHARACTER_VARIANT)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const [joinResult, setJoinResult] = useState(null)
+  const [successCountdown, setSuccessCountdown] = useState(SUCCESS_RESET_SECONDS)
+  const lastActivityRef = useRef(0)
+
+  const resetToWelcome = useCallback(() => {
+    setScreen('welcome')
+    setFaceDataUrl('')
+    setFaceDetected(true)
+    setSelectedCharacter(DEFAULT_CHARACTER_VARIANT)
+    setSubmitError('')
+    setJoinResult(null)
+    setIsSubmitting(false)
+  }, [])
+
+  // Kiosk safety net: a guest who walks away mid-flow does not block the next one.
+  useEffect(() => {
+    if (screen === 'welcome' || screen === 'success') return undefined
+    lastActivityRef.current = Date.now()
+    const intervalId = window.setInterval(() => {
+      if (Date.now() - lastActivityRef.current > IDLE_RESET_MS) resetToWelcome()
+    }, 5000)
+    return () => window.clearInterval(intervalId)
+  }, [screen, resetToWelcome])
+
+  useEffect(() => {
+    if (screen !== 'success') return undefined
+    const timerId = window.setTimeout(() => {
+      if (successCountdown <= 1) resetToWelcome()
+      else setSuccessCountdown(successCountdown - 1)
+    }, 1000)
+    return () => window.clearTimeout(timerId)
+  }, [screen, successCountdown, resetToWelcome])
 
   const handleStart = () => {
-    setJoinMessage('')
-    setFaceCropPngBase64('')
-    setSelectedCharacter('')
+    resetToWelcome()
     setScreen('capture')
   }
 
-  const handleContinueFromCapture = (facePngBase64, characterId) => {
-    if (!characterId) {
-      return
-    }
-
-    setFaceCropPngBase64(facePngBase64)
-    setSelectedCharacter(characterId)
-    setJoinMessage('')
+  const handleCaptured = useCallback(({ faceDataUrl: capturedFace, detected }) => {
+    setFaceDataUrl(capturedFace)
+    setFaceDetected(detected)
+    setSubmitError('')
     setScreen('character')
-  }
+  }, [])
 
   const handleJoinParade = async () => {
-    if (!faceCropPngBase64 || !selectedCharacter) {
-      return
-    }
+    if (!faceDataUrl || !selectedCharacter || isSubmitting) return
+    if (!socket.connected) socket.connect()
 
-    if (!socket.connected) {
-      socket.connect()
-    }
-
-    const selected = CHARACTER_OPTIONS.find((character) => character.id === selectedCharacter)
-    const characterName = selected ? selected.name : selectedCharacter
-    const payload = {
-      stationId,
-      faceImageBase64: faceCropPngBase64,
-      characterType: characterName,
-      createdAt: new Date().toISOString(),
-    }
+    const character = CHARACTER_OPTIONS.find((option) => option.id === selectedCharacter)
+    setIsSubmitting(true)
+    setSubmitError('')
 
     try {
-      setIsSubmitting(true)
-      setJoinMessage(`Submitting ${characterName} to local server...`)
-
-      const response = await new Promise((resolve, reject) => {
-        const timeoutId = window.setTimeout(() => {
-          reject(new Error('Local server did not respond in time.'))
-        }, 7000)
-
-        socket.emit('player:submit', payload, (ack) => {
-          window.clearTimeout(timeoutId)
-
-          if (!ack?.ok) {
-            reject(new Error(ack?.message || 'Failed to queue player.'))
-            return
-          }
-
-          resolve(ack)
-        })
+      const ack = await submitPlayer({
+        stationId,
+        faceImageBase64: faceDataUrl,
+        characterType: character?.name || selectedCharacter,
+        createdAt: new Date().toISOString(),
       })
-
-      const queuePosition = typeof response.queuePosition === 'number' ? response.queuePosition : '?'
-      setJoinMessage(`${characterName} queued successfully. Queue position: ${queuePosition}.`)
+      setJoinResult({
+        ticketNumber: Number(ack.ticketNumber || 0),
+        queuePosition: Number(ack.queuePosition || 0),
+        characterName: character?.name || selectedCharacter,
+      })
+      setSuccessCountdown(SUCCESS_RESET_SECONDS)
+      setScreen('success')
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to reach local server.'
-      setJoinMessage(`Join Parade failed: ${message}`)
+      setSubmitError(error instanceof Error ? error.message : 'Unable to reach the parade server.')
     } finally {
       setIsSubmitting(false)
     }
   }
 
+  const guestsAhead = Math.max(0, (joinResult?.queuePosition || 1) - 1)
+
   return (
-    <main className="station-page">
+    <main className="station-page" onPointerDown={() => { lastActivityRef.current = Date.now() }}>
       <div className="station-bg" aria-hidden="true">
         <span className="station-star star-a"></span>
         <span className="station-star star-b"></span>
@@ -98,12 +159,25 @@ function StationPage() {
         <span className="station-moon"></span>
       </div>
 
+      <div
+        className={`station-connection ${isServerConnected ? 'is-online' : 'is-offline'}`}
+        title={SOCKET_SERVER_URL}
+      >
+        <span className="station-connection-dot"></span>
+        {isServerConnected ? 'Parade online' : 'Parade offline - please call staff'}
+      </div>
+
       <section className="station-card">
         {screen === 'welcome' ? (
           <>
             <p className="station-eyebrow">Moonwalk Selfie Parade</p>
-            <h1 className="station-title">Welcome Explorer</h1>
-            <p className="station-text">Tap Start to take your selfie and join the moon catwalk parade.</p>
+            <h1 className="station-title">Join the Parade!</h1>
+            <p className="station-text">Snap a selfie, pick your character and watch yourself moonwalk across the big screen.</p>
+            <ol className="station-how-it-works">
+              <li><strong>1</strong> Take a selfie</li>
+              <li><strong>2</strong> Pick a character</li>
+              <li><strong>3</strong> Find your number on screen</li>
+            </ol>
             <button type="button" className="station-primary-button" onClick={handleStart}>
               Start
             </button>
@@ -112,57 +186,86 @@ function StationPage() {
 
         {screen === 'capture' ? (
           <>
-            <p className="station-eyebrow">Step 2 of 3</p>
-            <h1 className="station-title">Webcam Capture</h1>
-            <p className="station-text">Position your face in the frame, capture, pick your character, then continue.</p>
-
-            <StationWebcamCapture
-              onBack={() => setScreen('welcome')}
-              onContinue={handleContinueFromCapture}
-              selectedCharacter={selectedCharacter}
-              onSelectCharacter={setSelectedCharacter}
-            />
+            <StepLabel step={1} />
+            <h1 className="station-title">Take Your Selfie</h1>
+            <p className="station-text">Look at the camera and fit your face inside the oval.</p>
+            <StationWebcamCapture onCaptured={handleCaptured} onBack={resetToWelcome} />
           </>
         ) : null}
 
         {screen === 'character' ? (
           <>
-            <p className="station-eyebrow">Step 3 of 3</p>
-            <h1 className="station-title">Ready To Join</h1>
-            <p className="station-text">Character already selected. Submit now to join the parade queue.</p>
-            <p className="station-status-muted">Station ID: {stationId}</p>
-            <p className="station-status-muted">Server: {SOCKET_SERVER_URL}</p>
+            <StepLabel step={2} />
+            <h1 className="station-title">Your Parade Twin</h1>
+            {!faceDetected ? (
+              <p className="station-warning">We could not spot your face clearly. Retake for the best result, or continue anyway.</p>
+            ) : (
+              <p className="station-text">Tap a character to try it on.</p>
+            )}
 
-            <div className="station-character-layout">
-              <div className="station-character-preview-panel">
-                <div className="station-helmet-shell station-helmet-shell-small">
-                  <div className="station-helmet-face-ring station-helmet-face-ring-small">
-                    <img className="station-selfie-preview" src={faceCropPngBase64} alt="Selected face crop preview" />
-                  </div>
-                </div>
-                <p className="station-status-muted">
-                  Selected Character:{' '}
-                  <strong>{selectedCharacter ? CHARACTER_OPTIONS.find((character) => character.id === selectedCharacter)?.name : 'None'}</strong>
-                </p>
+            <div className="station-character-stage">
+              <StationAvatarPreview faceDataUrl={faceDataUrl} characterType={selectedCharacter} />
+              <div className="station-character-picker" role="radiogroup" aria-label="Choose your character">
+                {CHARACTER_OPTIONS.map((character) => (
+                  <button
+                    key={character.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selectedCharacter === character.id}
+                    className={`station-character-pill station-character-pill--${character.id} ${selectedCharacter === character.id ? 'active' : ''}`}
+                    onClick={() => setSelectedCharacter(character.id)}
+                  >
+                    <span className="station-character-pill-name">{character.name}</span>
+                    <span className="station-character-pill-tag">{character.tag}</span>
+                  </button>
+                ))}
               </div>
             </div>
 
-            <div className="station-character-actions">
-              <button type="button" className="station-secondary-button station-join-button" onClick={() => setScreen('capture')}>
-                Retake Selfie
-              </button>
+            <div className="station-character-actions station-character-actions--row">
               <button
                 type="button"
                 className="station-primary-button station-join-button"
                 onClick={handleJoinParade}
-                disabled={!selectedCharacter || isSubmitting}
+                disabled={isSubmitting}
               >
-                {isSubmitting ? 'Submitting...' : 'Submit / Join Parade'}
+                {isSubmitting ? 'Joining...' : 'Join the Parade'}
+              </button>
+              <button
+                type="button"
+                className="station-secondary-button station-join-button"
+                onClick={() => setScreen('capture')}
+                disabled={isSubmitting}
+              >
+                Retake Selfie
               </button>
             </div>
-
-            {joinMessage ? <p className="station-status-ok">{joinMessage}</p> : null}
+            {submitError ? <p className="station-camera-error">{submitError} Please try again.</p> : null}
           </>
+        ) : null}
+
+        {screen === 'success' && joinResult ? (
+          <>
+            <StepLabel step={3} />
+            <h1 className="station-title">You&apos;re in the Parade!</h1>
+            <p className="station-text">Look for your number above your {joinResult.characterName.toLowerCase()} on the big screen.</p>
+            {joinResult.ticketNumber ? (
+              <div className="station-ticket">
+                <span className="station-ticket-label">Your number</span>
+                <span className="station-ticket-number">{formatTicket(joinResult.ticketNumber)}</span>
+              </div>
+            ) : null}
+            <p className="station-status-muted">
+              {guestsAhead === 0 ? 'You are next to walk on!' : `${guestsAhead} ${guestsAhead === 1 ? 'guest' : 'guests'} ahead of you`}
+            </p>
+            <button type="button" className="station-primary-button" onClick={resetToWelcome}>
+              Done ({successCountdown})
+            </button>
+          </>
+        ) : null}
+
+        {showDebug ? (
+          <p className="station-status-muted station-debug">Station: {stationId} · Server: {SOCKET_SERVER_URL}</p>
         ) : null}
       </section>
     </main>

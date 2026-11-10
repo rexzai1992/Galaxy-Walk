@@ -4,6 +4,7 @@ export const DEFAULT_ALIEN_FACE_CALIBRATION = {
   modelScale: 1,
   paradeScale: 1,
   animationSpeedMultiplier: 1,
+  showNameTags: true,
   characterOffset: {
     x: 0,
     y: 0,
@@ -24,20 +25,24 @@ export const DEFAULT_ALIEN_FACE_CALIBRATION = {
     y: 0,
     z: 0,
   },
-  front: {
+  // Selfie head fit on the body (see components/avatar/AvatarCharacter.jsx).
+  head: {
+    scale: 1,
     x: 0,
     y: 0,
     z: 0,
-    width: 10.5,
-    height: 11.5,
+    faceZoom: 1,
+    faceY: 0,
   },
-  fallback: {
-    x: 0,
-    y: 0,
-    z: 15.2,
-    width: 9.8,
-    height: 10.8,
-  },
+}
+
+export const HEAD_CALIBRATION_LIMITS = {
+  scale: [0.6, 1.6],
+  x: [-0.3, 0.3],
+  y: [-0.3, 0.3],
+  z: [-0.3, 0.3],
+  faceZoom: [0.6, 1.6],
+  faceY: [-0.15, 0.15],
 }
 
 function toFiniteNumber(value, fallback) {
@@ -49,25 +54,6 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function normalizeProfile(inputProfile, defaults) {
-  const source = inputProfile && typeof inputProfile === 'object' ? inputProfile : {}
-  const rawWidth = toFiniteNumber(source.width, defaults.width)
-  const rawHeight = toFiniteNumber(source.height, defaults.height)
-  // Legacy payloads used very large overlay sizes (~60-120). Keep backward compatibility
-  // without shrinking valid current slider values (1-30).
-  const isLegacyScale = rawWidth > 50 || rawHeight > 50
-  const widthValue = isLegacyScale ? rawWidth * 0.32 : rawWidth
-  const heightValue = isLegacyScale ? rawHeight * 0.32 : rawHeight
-
-  return {
-    x: clamp(toFiniteNumber(source.x, defaults.x), -40, 40),
-    y: clamp(toFiniteNumber(source.y, defaults.y), -40, 40),
-    z: clamp(toFiniteNumber(source.z, defaults.z), -40, 40),
-    width: clamp(widthValue, 1, 30),
-    height: clamp(heightValue, 1, 30),
-  }
-}
-
 function normalizeTransformVector(inputVector, defaults, min, max) {
   const source = inputVector && typeof inputVector === 'object' ? inputVector : {}
   return {
@@ -75,6 +61,16 @@ function normalizeTransformVector(inputVector, defaults, min, max) {
     y: clamp(toFiniteNumber(source.y, defaults.y), min, max),
     z: clamp(toFiniteNumber(source.z, defaults.z), min, max),
   }
+}
+
+function normalizeHead(inputHead) {
+  const source = inputHead && typeof inputHead === 'object' ? inputHead : {}
+  return Object.fromEntries(
+    Object.entries(HEAD_CALIBRATION_LIMITS).map(([key, [min, max]]) => [
+      key,
+      clamp(toFiniteNumber(source[key], DEFAULT_ALIEN_FACE_CALIBRATION.head[key]), min, max),
+    ]),
+  )
 }
 
 export function normalizeAlienFaceCalibration(input) {
@@ -85,14 +81,12 @@ export function normalizeAlienFaceCalibration(input) {
     source.animationSpeedMultiplier,
     DEFAULT_ALIEN_FACE_CALIBRATION.animationSpeedMultiplier,
   )
-  const modelScale = clamp(rawModelScale, 0.6, 2.2)
-  const paradeScale = clamp(rawParadeScale, 0.6, 2.2)
-  const animationSpeedMultiplier = clamp(rawAnimationSpeedMultiplier, 0.5, 2.5)
 
   return {
-    modelScale,
-    paradeScale,
-    animationSpeedMultiplier,
+    modelScale: clamp(rawModelScale, 0.6, 2.2),
+    paradeScale: clamp(rawParadeScale, 0.6, 2.2),
+    animationSpeedMultiplier: clamp(rawAnimationSpeedMultiplier, 0.5, 2.5),
+    showNameTags: source.showNameTags === undefined ? DEFAULT_ALIEN_FACE_CALIBRATION.showNameTags : Boolean(source.showNameTags),
     characterOffset: normalizeTransformVector(
       source.characterOffset,
       DEFAULT_ALIEN_FACE_CALIBRATION.characterOffset,
@@ -117,8 +111,7 @@ export function normalizeAlienFaceCalibration(input) {
       -180,
       180,
     ),
-    front: normalizeProfile(source.front, DEFAULT_ALIEN_FACE_CALIBRATION.front),
-    fallback: normalizeProfile(source.fallback, DEFAULT_ALIEN_FACE_CALIBRATION.fallback),
+    head: normalizeHead(source.head),
   }
 }
 

@@ -15,9 +15,14 @@
     "dev:all:open": "sh -c 'npm run open:routes & npm run dev:all'",
     "dev:electron:main": "npm --prefix apps/electron run dev:main",
     "dev:electron:station": "npm --prefix apps/electron run dev:station",
-    "dev:electron:admin": "npm --prefix apps/electron run dev:admin"
+    "dev:electron:admin": "npm --prefix apps/electron run dev:admin",
+    "optimize:models": "node scripts/optimize-models.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "@gltf-transform/core": "^4.5.1",
+    "@gltf-transform/extensions": "^4.5.1",
+    "@gltf-transform/functions": "^4.5.1",
+    "concurrently": "^9.2.1",
+    "sharp": "^0.35.5"
   }
 }

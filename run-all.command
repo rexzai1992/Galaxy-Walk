@@ -17,13 +17,15 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 NEED_INSTALL=0
-for path in \
-  "node_modules" \
-  "apps/frontend/node_modules" \
-  "apps/server/node_modules" \
-  "apps/electron/node_modules"
+for dir in \
+  "." \
+  "apps/frontend" \
+  "apps/server" \
+  "apps/electron"
 do
-  if [ ! -d "$path" ]; then
+  # Install when modules are missing, or when package-lock.json changed since the
+  # last install (e.g. after `git pull` added a dependency).
+  if [ ! -d "$dir/node_modules" ] || [ "$dir/package-lock.json" -nt "$dir/node_modules/.package-lock.json" ]; then
     NEED_INSTALL=1
     break
   fi

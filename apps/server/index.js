@@ -12,7 +12,9 @@ const __dirname = dirname(__filename)
 
 const MAIN_PC_SERVER_IP = process.env.MAIN_PC_SERVER_IP || '192.168.1.100'
 const PORT = Number(process.env.SERVER_PORT || 3000)
-const FACES_STORAGE_DIR = join(__dirname, '..', '..', 'storage', 'faces')
+const STORAGE_DIR = join(__dirname, '..', '..', 'storage')
+const FACES_STORAGE_DIR = join(STORAGE_DIR, 'faces')
+const STATE_FILE = join(STORAGE_DIR, 'state.json')
 const QUEUE_SNAPSHOT_LIMIT = 100
 const MAX_SERVER_QUEUE = Number(process.env.MAX_SERVER_QUEUE || 300)
 const FACE_IMAGE_FILE_PATTERN = /\.(png|jpe?g)$/i
@@ -20,6 +22,27 @@ const FACE_IMAGE_FILE_PATTERN = /\.(png|jpe?g)$/i
 await mkdir(FACES_STORAGE_DIR, { recursive: true })
 
 const playerQueue = []
+
+// Ticket numbers let guests spot themselves on the big screen ("#042").
+// Persisted so a server restart during an event does not reuse numbers.
+async function loadLastTicketNumber() {
+  try {
+    const state = JSON.parse(await readFile(STATE_FILE, 'utf8'))
+    return Number.isInteger(state?.lastTicketNumber) ? state.lastTicketNumber : 0
+  } catch {
+    return 0
+  }
+}
+
+let lastTicketNumber = await loadLastTicketNumber()
+
+function issueTicketNumber() {
+  lastTicketNumber += 1
+  writeFile(STATE_FILE, JSON.stringify({ lastTicketNumber }, null, 2)).catch((error) => {
+    console.error(`[state] could not persist ticket number: ${error.message}`)
+  })
+  return lastTicketNumber
+}
 
 function buildPublicFacePath(fileName) {
   return `/storage/faces/${encodeURIComponent(String(fileName || ''))}`
@@ -30,6 +53,7 @@ function buildQueuePlayerPayload(player) {
     playerId: String(player?.playerId || ''),
     stationId: String(player?.stationId || 'station-unknown'),
     characterType: String(player?.characterType || 'Human'),
+    ticketNumber: Number(player?.ticketNumber || 0),
     createdAt: player?.createdAt || new Date().toISOString(),
     queuedAt: player?.queuedAt || new Date().toISOString(),
     faceImageFile: String(player?.faceImageFile || ''),
@@ -96,9 +120,9 @@ function decodeBase64Image(imageDataUrl) {
   }
 }
 
-async function saveFaceImageAsPng(faceImageBase64, playerId) {
-  const { buffer } = decodeBase64Image(faceImageBase64)
-  const fileName = `${playerId}.png`
+async function saveFaceImage(faceImageBase64, playerId) {
+  const { mimeExt, buffer } = decodeBase64Image(faceImageBase64)
+  const fileName = `${playerId}.${mimeExt === 'png' ? 'png' : 'jpg'}`
   const filePath = join(FACES_STORAGE_DIR, fileName)
 
   await writeFile(filePath, buffer)
@@ -239,19 +263,20 @@ io.on('connection', (socket) => {
         throw new Error('faceImageBase64 is required.')
       }
 
-      const playerId = randomUUID()
-      const savedFace = await saveFaceImageAsPng(faceImageBase64, playerId)
-
       if (playerQueue.length >= MAX_SERVER_QUEUE) {
         throw new Error(`Queue is full (${MAX_SERVER_QUEUE}). Please wait and try again.`)
       }
 
+      const playerId = randomUUID()
+      const savedFace = await saveFaceImage(faceImageBase64, playerId)
+      const ticketNumber = issueTicketNumber()
+
       const queuedPlayer = {
         playerId,
         stationId,
-        faceImageBase64,
         faceImageFile: savedFace.fileName,
         characterType,
+        ticketNumber,
         createdAt,
         queuedAt: new Date().toISOString(),
       }
@@ -265,11 +290,11 @@ io.on('connection', (socket) => {
 
       io.emit('player:queued', playerQueuedPayload)
       console.log(
-        `[queue] queued playerId=${playerId} stationId=${stationId} characterType=${characterType} queueCount=${playerQueue.length}`,
+        `[queue] queued #${ticketNumber} playerId=${playerId} stationId=${stationId} characterType=${characterType} queueCount=${playerQueue.length}`,
       )
 
       if (typeof ack === 'function') {
-        ack({ ok: true, playerId, queuePosition: playerQueue.length })
+        ack({ ok: true, playerId, ticketNumber, queuePosition: playerQueue.length })
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown submission error.'

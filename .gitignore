@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Runtime data: guest selfies are personal data, never commit them
+storage/faces/*
+!storage/faces/.gitkeep
+
+# Copied from node_modules by apps/frontend/scripts/copy-mediapipe-wasm.mjs
+apps/frontend/public/mediapipe/wasm/
+storage/state.json
