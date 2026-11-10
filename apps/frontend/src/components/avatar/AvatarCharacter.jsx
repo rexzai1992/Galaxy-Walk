@@ -13,6 +13,13 @@ import { useSelfieFace } from './useSelfieFace'
 
 const DEFAULT_ANIMATION_INTENT = 'idle'
 const ANIMATION_INTENTS = ['idle', 'wave', 'dance', 'pose']
+const ANIMATION_URLS = ANIMATION_INTENTS.map((intent) => ANIMATED_CHARACTER_GLB_URLS[intent] || CHARACTER_GLB_URL)
+const CROSSFADE_SECONDS = 0.35
+// Bobblehead: the selfie head wobbles on its neck, more while dancing.
+const HEAD_WOBBLE = { idle: 0.05, wave: 0.07, dance: 0.16, pose: 0.13 }
+const HEAD_WOBBLE_SPEED = 5.2
+// Neck pivot below the head centre, in head units.
+const HEAD_PIVOT_DROP = 0.95
 const MODEL_BASE_SCALE = 2.05
 // Where the selfie head sits on the body, in model space at rest pose (metres).
 const HEAD_ANCHOR = new THREE.Vector3(0, 1.3, 0.04)
@@ -30,6 +37,28 @@ function hasMotionTrack(clip) {
   if (!clip || !Array.isArray(clip.tracks)) return false
   if (!Number.isFinite(clip.duration) || clip.duration <= STATIC_CLIP_DURATION_EPSILON) return false
   return clip.tracks.some((track) => Number(track?.times?.length || 0) > 1)
+}
+
+// One clip per intent, renamed to the intent so actions are addressable by move.
+function buildIntentClips(animationGltfs) {
+  return ANIMATION_INTENTS.map((intent, index) => {
+    const source = (animationGltfs[index]?.animations || []).find(hasMotionTrack)
+    if (!source) return null
+    const clip = source.clone()
+    clip.name = intent
+    return clip
+  }).filter(Boolean)
+}
+
+function crossfadeTo(previous, next, speed, restart) {
+  if (previous === next) {
+    if (restart) next.reset().play()
+    next.setEffectiveTimeScale(speed)
+    return
+  }
+  next.reset().setEffectiveTimeScale(speed).setEffectiveWeight(1).play()
+  if (previous) previous.crossFadeTo(next, CROSSFADE_SECONDS, false)
+  else next.fadeIn(CROSSFADE_SECONDS)
 }
 
 // Clones the base GLB for one parade character and prepares it for a selfie head.
@@ -134,22 +163,23 @@ function AvatarCharacter({
   faceTexture = null,
   modelScale = 1,
   headCalibration = DEFAULT_HEAD_CALIBRATION,
+  // Changing this restarts the current move from frame 0 (synchronised group dances).
+  syncKey = 0,
   onDebugInfoChange,
 }) {
   const groupRef = useRef(null)
+  const wobbleRef = useRef(null)
   const activeActionRef = useRef(null)
+  const syncKeyRef = useRef(syncKey)
   const motionPhaseRef = useRef(0)
   const variant = resolveCharacterVariant(characterType)
   const animationIntent = resolveAnimationIntent(paradeAnimation)
-  const animationUrl = ANIMATED_CHARACTER_GLB_URLS[animationIntent] || CHARACTER_GLB_URL
 
   const baseGltf = useGLTF(CHARACTER_GLB_URL)
-  const animationGltf = useGLTF(animationUrl)
-  const clips = useMemo(() => {
-    const animationClips = animationGltf?.animations || []
-    return animationClips.length > 0 ? animationClips : baseGltf?.animations || []
-  }, [animationGltf, baseGltf])
-  const hasClipAnimation = useMemo(() => clips.some((clip) => hasMotionTrack(clip)), [clips])
+  // All moves are loaded once and cross-faded, so switching moves is instant.
+  const animationGltfs = useGLTF(ANIMATION_URLS)
+  const clips = useMemo(() => buildIntentClips(animationGltfs), [animationGltfs])
+  const hasClipAnimation = clips.length > 0
 
   const rig = useMemo(() => buildAvatarRig(baseGltf.scene), [baseGltf])
   useEffect(() => () => rig.dispose(), [rig])
@@ -175,21 +205,13 @@ function AvatarCharacter({
   const { actions } = useAnimations(clips, groupRef)
 
   useEffect(() => {
-    if (!hasClipAnimation) return
-    const allActions = Object.values(actions || {}).filter(Boolean)
-    const nextAction = allActions[0]
+    const nextAction = actions?.[animationIntent] || actions?.[DEFAULT_ANIMATION_INTENT]
     if (!nextAction) return
-
-    if (activeActionRef.current && activeActionRef.current !== nextAction) {
-      activeActionRef.current.fadeOut(0.25)
-    }
-    nextAction.reset().setEffectiveWeight(1).fadeIn(0.25).play()
+    const restart = syncKeyRef.current !== syncKey
+    syncKeyRef.current = syncKey
+    crossfadeTo(activeActionRef.current, nextAction, Math.max(0.1, animationSpeed), restart)
     activeActionRef.current = nextAction
-  }, [actions, hasClipAnimation])
-
-  useEffect(() => {
-    Object.values(actions || {}).forEach((action) => action?.setEffectiveTimeScale(Math.max(0.1, animationSpeed)))
-  }, [actions, animationSpeed])
+  }, [actions, animationIntent, animationSpeed, syncKey])
 
   useEffect(() => () => {
     Object.values(actions || {}).forEach((action) => action?.stop())
@@ -202,18 +224,25 @@ function AvatarCharacter({
       headBoneFound: Boolean(rig.headBone),
       imageLoaded: Boolean(face.isPhoto),
       characterVariant: variant.label,
-      currentAnimationName: hasClipAnimation
-        ? String(activeActionRef.current?.getClip()?.name || clips[0]?.name || '')
-        : `procedural:${animationIntent}`,
+      currentAnimationName: hasClipAnimation ? animationIntent : `procedural:${animationIntent}`,
       animationNames: clips.map((clip) => String(clip?.name || '')),
     })
   }, [onDebugInfoChange, baseGltf, rig, face.isPhoto, variant, clips, hasClipAnimation, animationIntent, actions])
 
-  // Gentle procedural bounce for models without usable animation clips.
   useFrame((_, delta) => {
-    if (hasClipAnimation || !groupRef.current) return
-    motionPhaseRef.current += delta * (2 + animationSpeed)
-    groupRef.current.position.y = Number(position?.[1] || 0) + Math.abs(Math.sin(motionPhaseRef.current)) * 0.05
+    motionPhaseRef.current += delta
+    const t = motionPhaseRef.current
+    // Bobblehead wobble on the neck pivot.
+    const wobble = wobbleRef.current
+    if (wobble) {
+      const amount = HEAD_WOBBLE[animationIntent] ?? 0.06
+      wobble.rotation.z = Math.sin(t * HEAD_WOBBLE_SPEED) * amount
+      wobble.rotation.x = Math.sin(t * HEAD_WOBBLE_SPEED * 0.5 + 1.3) * amount * 0.5
+    }
+    // Gentle procedural bounce for models without usable animation clips.
+    if (!hasClipAnimation && groupRef.current) {
+      groupRef.current.position.y = Number(position?.[1] || 0) + Math.abs(Math.sin(t * (2 + animationSpeed))) * 0.05
+    }
   })
 
   const head = { ...DEFAULT_HEAD_CALIBRATION, ...(headCalibration || {}) }
@@ -226,13 +255,15 @@ function AvatarCharacter({
       {rig.headBone
         ? createPortal(
           <group position={rig.headAnchor.position} quaternion={rig.headAnchor.quaternion} scale={rig.headAnchor.scale}>
-            <group position={[head.x, head.y, head.z]} scale={[headSize, headSize, headSize]}>
-              <SelfieHead
-                face={face}
-                headProp={variant.headProp}
-                faceZoom={head.faceZoom}
-                faceOffsetY={head.faceY}
-              />
+            <group ref={wobbleRef} position={[head.x, head.y - HEAD_PIVOT_DROP * headSize, head.z]}>
+              <group position={[0, HEAD_PIVOT_DROP * headSize, 0]} scale={[headSize, headSize, headSize]}>
+                <SelfieHead
+                  face={face}
+                  headProp={variant.headProp}
+                  faceZoom={head.faceZoom}
+                  faceOffsetY={head.faceY}
+                />
+              </group>
             </group>
           </group>,
           rig.headBone,
@@ -243,6 +274,6 @@ function AvatarCharacter({
 }
 
 useGLTF.preload(CHARACTER_GLB_URL)
-Object.values(ANIMATED_CHARACTER_GLB_URLS).forEach((url) => useGLTF.preload(url))
+ANIMATION_URLS.forEach((url) => useGLTF.preload(url))
 
 export default AvatarCharacter

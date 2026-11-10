@@ -151,13 +151,7 @@ function StationPage() {
 
   return (
     <main className="station-page" onPointerDown={() => { lastActivityRef.current = Date.now() }}>
-      <div className="station-bg" aria-hidden="true">
-        <span className="station-star star-a"></span>
-        <span className="station-star star-b"></span>
-        <span className="station-star star-c"></span>
-        <span className="station-star star-d"></span>
-        <span className="station-moon"></span>
-      </div>
+      <div className="station-bg" aria-hidden="true"></div>
 
       <div
         className={`station-connection ${isServerConnected ? 'is-online' : 'is-offline'}`}

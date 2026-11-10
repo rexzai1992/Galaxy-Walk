@@ -2,6 +2,7 @@ import { Suspense, useCallback, useEffect, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import AvatarCharacter from '../components/avatar/AvatarCharacter.jsx'
 import AvatarLighting from '../components/avatar/AvatarLighting.jsx'
+import GroundShadow from '../components/avatar/GroundShadow.jsx'
 import { CHARACTER_VARIANTS } from '../components/avatar/characterVariants'
 import { loadAlienFaceCalibration } from '../lib/alienFaceCalibration'
 import { alignFacePhoto, loadImage } from '../lib/faceAlign'
@@ -24,6 +25,7 @@ function LineupScene({ faceUrl, animation, headCalibration }) {
       <AvatarLighting />
       {LINEUP.map((variant, index) => (
         <Suspense key={variant.id} fallback={null}>
+          <GroundShadow position={[(index - (LINEUP.length - 1) / 2) * 2.6, -1.88, 0]} width={3} depth={1.4} />
           <AvatarCharacter
             position={[(index - (LINEUP.length - 1) / 2) * 2.6, -1.9, 0]}
             characterType={variant.id}

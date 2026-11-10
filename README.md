@@ -51,7 +51,8 @@ npm --prefix apps/electron run dev
 ## Routes
 
 - `/station` – guest kiosk: selfie (auto face alignment) → pick a character with a live 3D preview → ticket number
-- `/main` – parade wall. `?debug=1` or press **D** for the operator panel; `?calibrateCharacter=1` for calibration
+- `/main` – parade wall. `?debug=1` or press **D** for the operator panel; `?calibrateCharacter=1` for calibration;
+  `?danceBreakEvery=15` to trigger the group "Dance Break" every 15 s while testing (default: every 35–55 s)
 - `/admin` – character lineup: all four characters wearing the latest selfie
 
 ## 3D characters

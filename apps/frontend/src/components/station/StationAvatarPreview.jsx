@@ -2,6 +2,7 @@ import { Suspense, useRef } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import AvatarCharacter from '../avatar/AvatarCharacter.jsx'
 import AvatarLighting from '../avatar/AvatarLighting.jsx'
+import GroundShadow from '../avatar/GroundShadow.jsx'
 
 // Slow back-and-forth turn so the guest sees the 3D head from a few angles.
 function Turntable({ children }) {
@@ -18,6 +19,7 @@ function StationAvatarPreview({ faceDataUrl, characterType, animation = 'wave' }
       <Canvas dpr={[1, 2]} camera={{ position: [0, 0.35, 8.4], fov: 33 }}>
         <AvatarLighting />
         <Suspense fallback={null}>
+          <GroundShadow position={[0, -2.03, 0]} width={3.4} depth={1.6} />
           <Turntable>
             <AvatarCharacter
               position={[0, -2.05, 0]}

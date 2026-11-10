@@ -6,6 +6,7 @@ import { io } from 'socket.io-client'
 import { useLocation } from 'react-router-dom'
 import AvatarCharacter from '../components/avatar/AvatarCharacter.jsx'
 import AvatarLighting from '../components/avatar/AvatarLighting.jsx'
+import GroundShadow from '../components/avatar/GroundShadow.jsx'
 import { CHARACTER_VARIANTS, resolveCharacterVariant } from '../components/avatar/characterVariants'
 import { ANIMATED_CHARACTER_GLB_URLS, CHARACTER_GLB_URL } from '../components/main/alienGlbConfig'
 import {
@@ -33,7 +34,24 @@ const SCREEN_EDGE_MARGIN = 4
 const DEFAULT_PARADE_BOUNDS = { startX: 22, exitX: -22 }
 // Height of the name tag above the feet, in character model units.
 const NAME_TAG_HEIGHT = 4.25
-const CONVEYOR_ANIMATIONS = ['idle', 'idle', 'wave', 'dance', 'pose']
+// Dance party: every character keeps switching moves at random, throws in
+// spins/hops/wiggles, and the whole parade bobs on one shared beat. Every
+// 35-55 s a synchronised "Dance Break" stops everyone for a group dance.
+const CONVEYOR_ANIMATIONS = ['dance', 'dance', 'pose', 'pose', 'wave', 'idle']
+const MOVE_SECONDS = [3, 6]
+const FLOURISH_SECONDS = [4, 9]
+const FLOURISHES = [
+  { type: 'spin', duration: 0.9 },
+  { type: 'hop', duration: 0.7 },
+  { type: 'wiggle', duration: 1.1 },
+  { type: 'spin', duration: 0.9 },
+]
+const BEATS_PER_SECOND = 2
+const BEAT_BOB_HEIGHT = 0.07
+const DANCE_BREAK_EVERY_SECONDS = [35, 55]
+const DANCE_BREAK_SECONDS = 7.5
+const DANCE_BREAK_MOVES = ['dance', 'pose']
+const DANCE_BREAK_MIN_CHARACTERS = 2
 const FACE_DEBUG_DEFAULT = {
   modelLoaded: false,
   headBoneFound: false,
@@ -207,37 +225,6 @@ function MainDisplayBackgroundVideo() {
   )
 }
 
-let sharedShadowTexture = null
-
-function getShadowTexture() {
-  if (sharedShadowTexture) return sharedShadowTexture
-  const size = 128
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
-  gradient.addColorStop(0, 'rgba(0, 0, 0, 0.55)')
-  gradient.addColorStop(0.55, 'rgba(0, 0, 0, 0.22)')
-  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
-  ctx.fillStyle = gradient
-  ctx.fillRect(0, 0, size, size)
-  sharedShadowTexture = new CanvasTexture(canvas)
-  sharedShadowTexture.colorSpace = SRGBColorSpace
-  return sharedShadowTexture
-}
-
-// Soft blob shadow that grounds a character on any background.
-function GroundShadow({ width = 2.4, depth = 1.1 }) {
-  const texture = useMemo(() => getShadowTexture(), [])
-  return (
-    <mesh rotation-x={-Math.PI / 2} position={[0, 0.02, 0]} renderOrder={-1}>
-      <planeGeometry args={[width, depth]} />
-      <meshBasicMaterial map={texture} transparent depthWrite={false} toneMapped={false} />
-    </mesh>
-  )
-}
-
 function CalibrationShadowRail() {
   const lane = PARADE_LANES[2]
   const railLength = 52
@@ -308,9 +295,18 @@ function buildFaceTextureUrl(payload) {
   }
 }
 
-function pickConveyorAnimation() {
-  const index = Math.floor(Math.random() * CONVEYOR_ANIMATIONS.length)
-  return CONVEYOR_ANIMATIONS[index] || 'idle'
+function randomBetween([min, max]) {
+  return min + Math.random() * (max - min)
+}
+
+function pickRandom(list) {
+  return list[Math.floor(Math.random() * list.length)]
+}
+
+function pickConveyorAnimation(previous) {
+  // Avoid repeating the same move back to back.
+  const options = CONVEYOR_ANIMATIONS.filter((move) => move !== previous)
+  return pickRandom(options.length > 0 ? options : CONVEYOR_ANIMATIONS)
 }
 
 function createCheckerFaceTexture() {
@@ -492,19 +488,87 @@ function MovingParadeCharacter({
   characterRotation,
   headCalibration,
   showNameTag,
+  danceBreak,
 }) {
   const moverRef = useRef(null)
+  const flairRef = useRef(null)
   const xRef = useRef(player.spawnX)
   const hasExitedRef = useRef(false)
+  const speedFactorRef = useRef(1)
+  const flourishRef = useRef(null)
+  const clockRef = useRef(0)
+  const wasOnBreakRef = useRef(false)
+  const [move, setMove] = useState(player.paradeAnimation)
   const ticketLabel = formatTicket(player.ticketNumber)
   const scale = PARADE_CHARACTER_SCALE * paradeScale
+  const isOnBreak = Boolean(danceBreak)
 
-  useFrame((_, delta) => {
+  // Random move changes and flourishes while walking.
+  useEffect(() => {
+    if (isOnBreak) return undefined
+    let moveTimer = null
+    let flourishTimer = null
+    const scheduleMove = () => {
+      moveTimer = window.setTimeout(() => {
+        setMove((previous) => pickConveyorAnimation(previous))
+        scheduleMove()
+      }, randomBetween(MOVE_SECONDS) * 1000)
+    }
+    const scheduleFlourish = () => {
+      flourishTimer = window.setTimeout(() => {
+        flourishRef.current = { ...pickRandom(FLOURISHES), start: clockRef.current }
+        scheduleFlourish()
+      }, randomBetween(FLOURISH_SECONDS) * 1000)
+    }
+    scheduleMove()
+    scheduleFlourish()
+    return () => {
+      window.clearTimeout(moveTimer)
+      window.clearTimeout(flourishTimer)
+    }
+  }, [isOnBreak])
+
+  // Everyone hops into the dance break and spins out of it.
+  useEffect(() => {
+    if (isOnBreak) flourishRef.current = { type: 'hop', duration: 0.7, start: clockRef.current }
+    else if (wasOnBreakRef.current) flourishRef.current = { type: 'spin', duration: 0.9, start: clockRef.current }
+    wasOnBreakRef.current = isOnBreak
+  }, [isOnBreak, danceBreak?.id])
+
+  useFrame((state, delta) => {
+    clockRef.current = state.clock.elapsedTime
     if (hasExitedRef.current) return
 
-    xRef.current -= player.speed * delta
+    // Ease to a stop for the dance break and back to walking afterwards.
+    const targetSpeed = isOnBreak ? 0 : 1
+    speedFactorRef.current += (targetSpeed - speedFactorRef.current) * Math.min(1, delta * 4)
+    xRef.current -= player.speed * speedFactorRef.current * delta
     if (moverRef.current) {
       moverRef.current.position.x = xRef.current
+    }
+
+    const flair = flairRef.current
+    if (flair) {
+      const t = state.clock.elapsedTime
+      // Shared beat (same clock for everyone) so the parade bobs together.
+      let lift = Math.abs(Math.sin(t * Math.PI * BEATS_PER_SECOND)) * BEAT_BOB_HEIGHT
+      let spin = 0
+      let tilt = 0
+      const flourish = flourishRef.current
+      if (flourish) {
+        const progress = (t - flourish.start) / flourish.duration
+        if (progress >= 1 || progress < 0) {
+          flourishRef.current = null
+        } else if (flourish.type === 'spin') {
+          spin = (1 - Math.cos(progress * Math.PI)) * Math.PI
+        } else if (flourish.type === 'hop') {
+          lift += Math.sin(progress * Math.PI) * 0.9
+        } else if (flourish.type === 'wiggle') {
+          tilt = Math.sin(progress * Math.PI * 8) * 0.2 * (1 - progress)
+        }
+      }
+      flair.position.y = lift
+      flair.rotation.set(0, spin, tilt)
     }
 
     if (xRef.current < boundsRef.current.exitX) {
@@ -516,24 +580,30 @@ function MovingParadeCharacter({
   return (
     <group ref={moverRef} position={[player.spawnX, player.laneY, player.laneZ]} scale={[scale, scale, scale]}>
       <GroundShadow width={2.6 * modelScale} depth={1.2 * modelScale} />
-      <group
-        position={[characterOffset.x, characterOffset.y, characterOffset.z]}
-        rotation={[
-          MathUtils.degToRad(characterRotation.x),
-          MathUtils.degToRad(characterRotation.y),
-          MathUtils.degToRad(characterRotation.z),
-        ]}
-      >
-        <Suspense fallback={null}>
-          <AvatarCharacter
-            characterType={player.characterType}
-            paradeAnimation={player.paradeAnimation}
-            animationSpeed={Math.max(0.65, player.speed * 0.4 * animationSpeedMultiplier)}
-            faceTextureUrl={player.faceTextureUrl}
-            modelScale={modelScale}
-            headCalibration={headCalibration}
-          />
-        </Suspense>
+      <group ref={flairRef}>
+        <group
+          position={[characterOffset.x, characterOffset.y, characterOffset.z]}
+          rotation={[
+            MathUtils.degToRad(characterRotation.x),
+            MathUtils.degToRad(characterRotation.y),
+            MathUtils.degToRad(characterRotation.z),
+          ]}
+        >
+          <Suspense fallback={null}>
+            <AvatarCharacter
+              characterType={player.characterType}
+              paradeAnimation={danceBreak ? danceBreak.move : move}
+              // Same speed for everyone during a break keeps the group dance in sync.
+              animationSpeed={danceBreak
+                ? animationSpeedMultiplier
+                : Math.max(0.65, player.speed * 0.4 * animationSpeedMultiplier)}
+              syncKey={danceBreak ? danceBreak.id : 0}
+              faceTextureUrl={player.faceTextureUrl}
+              modelScale={modelScale}
+              headCalibration={headCalibration}
+            />
+          </Suspense>
+        </group>
       </group>
       {showNameTag && ticketLabel ? (
         <Html
@@ -552,6 +622,7 @@ function MovingParadeCharacter({
 function MainMoonScene({
   activePlayers,
   onPlayerExit,
+  danceBreak,
   boundsRef,
   onBoundsChange,
   settings,
@@ -591,6 +662,7 @@ function MainMoonScene({
             characterRotation={settings.characterRotation}
             headCalibration={settings.head}
             showNameTag={settings.showNameTags}
+            danceBreak={danceBreak}
           />
         ))}
       </group>
@@ -877,6 +949,7 @@ function MainDisplayPage() {
   const [connectionState, setConnectionState] = useState('connecting')
   const [socketId, setSocketId] = useState('')
   const [lastQueuedPlayer, setLastQueuedPlayer] = useState(null)
+  const [danceBreak, setDanceBreak] = useState(null)
   const [isAlienGlbReady, setIsAlienGlbReady] = useState(false)
   const [paradeEdgeX, setParadeEdgeX] = useState(DEFAULT_PARADE_BOUNDS.startX)
   const [isDebugVisible, setIsDebugVisible] = useState(() => searchParams.get('debug') === '1')
@@ -1130,6 +1203,35 @@ function MainDisplayPage() {
     }
   }, [isCharacterCalibrationMode])
 
+  // Synchronised group "Dance Break" every 35-55 s (or ?danceBreakEvery=<seconds> for testing).
+  useEffect(() => {
+    if (isCharacterCalibrationMode) return undefined
+    const fixedEvery = Number(searchParams.get('danceBreakEvery'))
+    const nextDelay = () => (fixedEvery > 0 ? fixedEvery : randomBetween(DANCE_BREAK_EVERY_SECONDS)) * 1000
+    let startTimer = null
+    let endTimer = null
+
+    const scheduleBreak = () => {
+      startTimer = window.setTimeout(() => {
+        if (activePlayersRef.current.length < DANCE_BREAK_MIN_CHARACTERS) {
+          scheduleBreak()
+          return
+        }
+        setDanceBreak({ id: Date.now(), move: pickRandom(DANCE_BREAK_MOVES) })
+        endTimer = window.setTimeout(() => {
+          setDanceBreak(null)
+          scheduleBreak()
+        }, DANCE_BREAK_SECONDS * 1000)
+      }, nextDelay())
+    }
+
+    scheduleBreak()
+    return () => {
+      window.clearTimeout(startTimer)
+      window.clearTimeout(endTimer)
+    }
+  }, [isCharacterCalibrationMode, searchParams])
+
   const statusText = useMemo(() => {
     if (isCharacterCalibrationMode) return 'Calibration'
     if (connectionState === 'connected') return 'Connected'
@@ -1369,6 +1471,7 @@ function MainDisplayPage() {
           ) : (
             <MainMoonScene
               activePlayers={activePlayers}
+              danceBreak={danceBreak}
               onPlayerExit={handlePlayerExit}
               boundsRef={paradeBoundsRef}
               onBoundsChange={handleParadeBoundsChange}
@@ -1409,6 +1512,12 @@ function MainDisplayPage() {
           </div>
         ) : null}
       </div>
+
+      {danceBreak ? (
+        <div className="dance-break-banner" key={danceBreak.id} aria-live="polite">
+          Dance Break!
+        </div>
+      ) : null}
 
       {isCharacterCalibrationMode ? (
         <section className="face-calibration-panel">
